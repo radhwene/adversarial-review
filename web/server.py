@@ -30,7 +30,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -153,6 +153,20 @@ class App:
         self.runner = DebateRunner(registry, runs_dir)
         self.debates: Dict[str, Debate] = {}
         self.slots = threading.BoundedSemaphore(max_active)
+
+    def signed_out_agents(self, config: DebateConfig) -> List[str]:
+        """Seats whose CLI is not logged in. Checked before spawning: an unauthenticated codex falls back
+        to the pay-per-use API and fails with a bare 401 mid-debate."""
+        if self.llm_auth is None:
+            return []
+        out = []
+        for agent in dict.fromkeys((config.proposer, config.critic, config.judge)):
+            try:
+                if not self.llm_auth.status(agent).logged_in:
+                    out.append(agent)
+            except UnknownProvider:  # mock, deepseek: no CLI login
+                continue
+        return out
 
     def start(self, config: DebateConfig) -> Debate:
         config.validate(self.registry)
@@ -360,6 +374,11 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     max_rounds=int(body.get("max_rounds", 3)),
                     project=str(body.get("project", DEFAULT_PROJECT)),
                 )
+                signed_out = app.signed_out_agents(config)
+                if signed_out:
+                    self._error(HTTPStatus.CONFLICT, ", ".join(signed_out)
+                                + " non connecté : ouvre « Comptes LLM » et clique Connecter")
+                    return
                 debate = app.start(config)
             except UnknownProject as exc:
                 self._error(HTTPStatus.BAD_REQUEST, f"unknown project: {exc}")

@@ -283,6 +283,28 @@ class LlmAuthRouteTests(unittest.TestCase):
     request = ServerTests.request
     HTTPS = {"X-Forwarded-Proto": "https", "X-Forwarded-For": "198.51.100.7"}
 
+    def test_debate_refused_while_a_seat_is_signed_out(self):
+        from auth import AuthStatus, UnknownProvider
+
+        def status(agent):
+            if agent == "mock":
+                raise UnknownProvider(agent)
+            return AuthStatus(logged_in=(agent == "claude"))
+        self.llm.status.side_effect = status
+        resp, raw = self.request("POST", "/api/debates", {"question": "q?", "proposer": "claude", "critic": "codex",
+                                                          "judge": "codex", "max_rounds": 1})
+        self.assertEqual(resp.status, 409, raw)
+        self.assertTrue(json.loads(raw)["error"].startswith("codex non connecté"), raw)
+        self.assertEqual([c.args for c in self.llm.status.call_args_list], [("claude",), ("codex",)])  # deduplicated
+
+    def test_debate_with_non_cli_agents_skips_the_login_check(self):
+        from auth import UnknownProvider
+        self.llm.status.side_effect = UnknownProvider("mock")
+        resp, raw = self.request("POST", "/api/debates", {"question": "q?", "proposer": "mock", "critic": "mock",
+                                                          "judge": "mock", "max_rounds": 1})
+        self.assertEqual(resp.status, 202, raw)
+        self.llm.status.assert_called_once_with("mock")
+
     def test_actions_refused_without_https(self):
         for headers in ({}, {"X-Forwarded-Proto": "http"}, {"X-Forwarded-For": "198.51.100.7"}):
             resp, raw = self.request("POST", "/api/auth/claude/login", {}, headers=headers)
