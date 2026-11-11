@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adversarial Reasoning</title>
+<style>
+:root {
+  color-scheme: light;
+  --paper: #f2f3f5; --sheet: #ffffff; --rail: #e8eaee; --ink: #15171c; --ink-2: #4a4f5a; --ink-3: #6b707b;
+  --rule: #d5d8de; --rule-strong: #b9bdc6;
+  --accent: #1e3a8a; --accent-ink: #ffffff;
+  --prop: #1f4fa8; --prop-wash: #eaf0fb;
+  --crit: #9b2335; --crit-wash: #f9ecee;
+  --judge: #15171c; --judge-wash: #f6f4ee;
+  --ok: #1d6b45; --warn: #9b2335;
+  --code: #eef0f3; --sel: #c9d6f2;
+  --serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --shadow: 0 1px 2px rgba(20, 24, 33, .06), 0 6px 20px rgba(20, 24, 33, .06);
+  --ease: cubic-bezier(.16, 1, .3, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0f1217; --sheet: #161a21; --rail: #12151b; --ink: #e7e9ee; --ink-2: #b4b9c4; --ink-3: #8c919d;
+    --rule: #272c35; --rule-strong: #3a404b;
+    --accent: #8fb0f5; --accent-ink: #0f1217;
+    --prop: #8fb0f5; --prop-wash: #172033;
+    --crit: #f0909c; --crit-wash: #2a171b;
+    --judge: #e7e9ee; --judge-wash: #1c1f26;
+    --ok: #7ccfa2; --warn: #f0909c;
+    --code: #1f242d; --sel: #2c4170;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); caret-color: var(--accent); }
+::selection { background: var(--sel); color: var(--ink); }
+* { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+button, select, input, textarea { font: inherit; color: inherit; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- shell ---------- */
+.top { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 16px; height: 56px; padding: 0 20px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--rule); }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand b { font: 600 17px/1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
+.brand span { color: var(--ink-3); font-size: 13px; white-space: nowrap; }
+.agents { margin-left: auto; display: flex; gap: 12px; font-size: 13px; color: var(--ink-2); }
+.agents span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.dot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.shell { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: calc(100vh - 56px); }
+
+/* ---------- docket (rail) ---------- */
+.rail { border-right: 1px solid var(--rule); background: var(--rail); padding: 18px 14px 24px; position: sticky; top: 56px;
+  height: calc(100vh - 56px); overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.rail h2 { font: 600 12px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; }
+.docket-body { display: flex; flex-direction: column; gap: 22px; }
+.proj { display: flex; gap: 6px; }
+.proj select { flex: 1; min-width: 0; }
+.np { display: flex; gap: 6px; margin-top: 8px; }
+.np input { flex: 1; min-width: 0; }
+.np-err { color: var(--warn); font-size: 13px; margin-top: 6px; }
+.path { font: 12px/1.4 var(--mono); color: var(--ink-3); margin-top: 6px; overflow-wrap: anywhere; }
+.docket { display: flex; flex-direction: column; gap: 2px; }
+.docket a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--ink); text-decoration: none; transition: background .15s; }
+.docket a:hover { background: color-mix(in srgb, var(--sheet) 70%, transparent); }
+.docket a.current { background: var(--sheet); box-shadow: var(--shadow); }
+.docket .q { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 1.35; }
+.docket .m { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.docket .m > * { white-space: nowrap; }
+.docket .m time { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.docket .st { margin-left: auto; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.st.completed { color: var(--ok); } .st.failed { color: var(--warn); } .st.running { color: var(--accent); }
+.docket-empty { color: var(--ink-3); font-size: 14px; padding: 8px 10px; }
+.rail .docket-toggle { display: none; }
+
+/* ---------- controls ---------- */
+select, input[type=text], textarea { background: var(--sheet); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 8px 10px; transition: border-color .15s; }
+select:hover, input[type=text]:hover, textarea:hover { border-color: var(--ink-3); }
+textarea::placeholder, input::placeholder { color: var(--ink-3); }
+.btn { white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  border: 1px solid var(--rule-strong); background: var(--sheet); font-weight: 600; font-size: 14px; transition: background .15s, border-color .15s, transform .1s; }
+.btn:hover { border-color: var(--ink-3); }
+.btn:active { transform: translateY(1px); }
+.btn.icon { padding: 8px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); padding: 11px 20px; font-size: 15px; }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--ink)); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
+.btn.ghost:hover { background: var(--sheet); border-color: var(--rule); }
+.btn:disabled, select:disabled, textarea:disabled, input:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+/* ---------- main ---------- */
+main { padding: 32px 24px 96px; }
+.col { max-width: 860px; margin: 0 auto; }
+
+/* saisine (new debate form) */
+.saisine h1 { font: 600 30px/1.15 var(--serif); letter-spacing: -.015em; margin: 8px 0 6px; text-wrap: balance; }
+.saisine .lede { color: var(--ink-2); margin: 0 0 24px; max-width: 60ch; }
+.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; box-shadow: var(--shadow); }
+.saisine .sheet { padding: 20px; }
+.field-label { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
+#question { width: 100%; min-height: 128px; resize: vertical; font: 17px/1.5 var(--serif); padding: 12px 14px; }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.examples button { border: 1px solid var(--rule); background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 13px; color: var(--ink-2); cursor: pointer; text-align: left; }
+.examples button:hover { border-color: var(--ink-3); color: var(--ink); }
+.parties { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--rule); }
+.party label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.party label i { width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+.party select { width: 100%; }
+.party.p { --c: var(--prop); } .party.c { --c: var(--crit); } .party.j { --c: var(--judge); }
+.party small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 4px; }
+.bench { display: grid; grid-template-columns: 1fr auto; gap: 16px 24px; align-items: end; margin-top: 16px; }
+fieldset.rounds { border: 0; margin: 0; padding: 0; min-width: 0; }
+fieldset.rounds legend { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 8px; overflow: hidden; }
+.seg label { position: relative; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; min-width: 40px; padding: 7px 0; text-align: center; font-variant-numeric: tabular-nums; border-left: 1px solid var(--rule); transition: background .15s; }
+.seg label:first-child span { border-left: 0; }
+.seg input:checked + span { background: var(--ink); color: var(--paper); font-weight: 600; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+.seg input:disabled + span { opacity: .55; }
+.hint { color: var(--ink-3); font-size: 13px; margin-top: 6px; }
+.launch { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 24px; }
+
+/* case file */
+.case-head { padding: 22px 24px 18px; }
+.case-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: var(--ink-3); }
+.case-meta .no { font-family: var(--mono); }
+.case-meta .state { margin-left: auto; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 12px; }
+.case-title { font: 600 24px/1.25 var(--serif); letter-spacing: -.01em; margin: 10px 0 12px; text-wrap: balance; overflow-wrap: anywhere; }
+.versus { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
+.versus b { font-weight: 600; } .versus .p { color: var(--prop); } .versus .c { color: var(--crit); }
+.versus em { font-style: italic; font-family: var(--serif); color: var(--ink-3); }
+.register { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; border-top: 1px solid var(--rule); }
+.register div { padding: 12px 0 0; }
+.register div + div { padding-left: 16px; border-left: 1px solid var(--rule); }
+.register b { display: block; font: 600 20px/1.1 var(--sans); font-variant-numeric: tabular-nums; }
+.register span { font-size: 12px; color: var(--ink-3); }
+.progress { display: flex; gap: 3px; margin-top: 16px; }
+.progress span { flex: 1; height: 3px; border-radius: 2px; background: var(--rule); transition: background .25s; }
+.progress span.done { background: var(--ink-2); }
+.progress span.live { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* verdict (the payoff) */
+.verdict { margin-top: 16px; padding: 20px 24px; display: grid; grid-template-columns: auto 1fr; gap: 6px 24px; align-items: center;
+  border: 1px solid var(--rule-strong); border-radius: 12px; background: var(--judge-wash); box-shadow: var(--shadow); }
+.verdict.waiting { grid-template-columns: 1fr; box-shadow: none; background: transparent; border-style: dashed; color: var(--ink-3); font-size: 14px; }
+.stamp { --c: var(--judge); grid-row: span 2; display: inline-block; padding: 8px 14px; border: 2.5px solid var(--c); border-radius: 6px; color: var(--c);
+  font: 700 15px/1.1 var(--sans); letter-spacing: .12em; text-transform: uppercase; transform: rotate(-3deg); text-align: center;
+  box-shadow: inset 0 0 0 2px var(--judge-wash), inset 0 0 0 3.5px var(--c); }
+.stamp small { display: block; font-size: 10px; letter-spacing: .16em; opacity: .8; margin-bottom: 3px; }
+.stamp.p { --c: var(--prop); } .stamp.c { --c: var(--crit); }
+.verdict.landed .stamp { animation: stamp .42s var(--ease) both; }
+@keyframes stamp { from { transform: rotate(-9deg) scale(1.35); opacity: 0; filter: blur(2px); } to { transform: rotate(-3deg) scale(1); opacity: 1; filter: none; } }
+.verdict .facts { font-size: 14px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.verdict .facts b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.verdict .read { justify-self: start; }
+
+/* transcript */
+.record { margin-top: 28px; }
+.sitting { display: flex; align-items: center; gap: 14px; margin: 28px 0 14px; color: var(--ink-3); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.sitting::before, .sitting::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.turn { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 20px; padding: 16px 0; }
+.turn + .turn { border-top: 1px solid var(--rule); }
+.turn.proposer { --c: var(--prop); --w: var(--prop-wash); }
+.turn.critic { --c: var(--crit); --w: var(--crit-wash); }
+.turn.judge { --c: var(--judge); --w: var(--judge-wash); }
+.turn-head { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding-top: 2px; }
+.who { font: 700 12px/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+.agent { font-size: 14px; font-weight: 600; }
+.tmeta { font: 12px/1.3 var(--mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { font-size: 11px; line-height: 1.2; padding: 3px 7px; border-radius: 4px; background: var(--w); color: var(--ink-2); white-space: nowrap; }
+.chip.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); font-weight: 700; letter-spacing: .04em; }
+.chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); font-weight: 700; letter-spacing: .04em; }
+.turn-body { font: 16px/1.62 var(--serif); max-width: 68ch; overflow-wrap: anywhere; padding-left: 16px; border-left: 1px solid var(--c); }
+.turn-body > :first-child { margin-top: 0; }
+.turn-body > :last-child { margin-bottom: 0; }
+.turn-body h2, .turn-body h3, .turn-body h4 { font: 700 15px/1.3 var(--sans); margin: 18px 0 6px; }
+.turn-body p { margin: 0 0 12px; }
+.turn-body ul, .turn-body ol { margin: 0 0 12px; padding-left: 22px; }
+.turn-body li { margin-bottom: 4px; }
+.turn-body code { font: 13.5px var(--mono); background: var(--code); padding: 1px 5px; border-radius: 4px; }
+.turn-body pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+.turn-body pre code { background: none; padding: 0; }
+.turn.judge .turn-body { border-left: 0; padding: 18px 20px; background: var(--judge-wash); border: 1px solid var(--rule-strong); border-radius: 10px;
+  box-shadow: inset 0 0 0 3px var(--judge-wash), inset 0 0 0 4px var(--rule); max-width: none; }
+.pending .turn-body { color: var(--ink-3); font: 14px/1.5 var(--sans); }
+.writing { display: flex; flex-direction: column; gap: 8px; }
+.writing i { display: block; height: 10px; border-radius: 3px; background: linear-gradient(90deg, var(--rule) 0%, var(--w) 50%, var(--rule) 100%); background-size: 200% 100%; animation: sheen 1.6s linear infinite; }
+.writing i:nth-child(1) { width: 92%; } .writing i:nth-child(2) { width: 78%; } .writing i:nth-child(3) { width: 54%; }
+@keyframes sheen { to { background-position: -200% 0; } }
+.writing span { font-variant-numeric: tabular-nums; margin-top: 2px; }
+.banner { margin: 16px 0; padding: 12px 16px; border-radius: 10px; font-size: 14px; }
+.banner.err { background: var(--crit-wash); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+.banner.info { background: var(--sheet); color: var(--ink-2); border: 1px solid var(--rule); }
+.turn.enter { animation: rise .32s var(--ease) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+/* ---------- small screens ---------- */
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .brand span, .agents { display: none; }
+  .top { padding: 0 16px; }
+  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); padding: 10px 16px 12px; gap: 10px; }
+  .rail .docket-toggle { display: flex; width: 100%; justify-content: space-between; }
+  .rail .docket-body { display: none; }
+  body.docket-open .rail .docket-body { display: flex; flex-direction: column; gap: 14px; }
+  body.docket-open .docket-toggle svg { transform: rotate(180deg); }
+  .docket { max-height: 50vh; overflow-y: auto; }
+  main { padding: 20px 16px 72px; }
+  .saisine h1 { font-size: 24px; }
+  .saisine .sheet { padding: 16px; }
+  .parties { grid-template-columns: 1fr; }
+  .parties .swap { justify-self: start; }
+  .bench { grid-template-columns: 1fr; }
+  .launch .btn.primary { flex: 1; }
+  .case-head { padding: 18px 16px 14px; }
+  .case-title { font-size: 20px; }
+  .turn { grid-template-columns: 1fr; gap: 8px; }
+  .turn-head { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .chips { margin-top: 0; }
+  .turn-body { padding-left: 12px; }
+  .verdict { grid-template-columns: 1fr; padding: 18px 16px; justify-items: start; }
+  .stamp { grid-row: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<!--
+THESIS: un débat entre LLM se lit comme le procès-verbal d'une audience (greffe) : parties nommées, séances, jugement tamponné en tête. Refuse le fil de bulles de chat et le gros formulaire latéral.
+OWN-WORLD: papier gris froid, encre noire ; Proposant = bleu encre (#1f4fa8), Critique = bordeaux (#9b2335), Juge = noir sur cartouche à double filet ; tampon incliné pour le verdict ; serif de texte pour les plaidoiries, sans système pour l'outil, mono pour n°/durées.
+STORY: l'opérateur choisit un projet (rôle des débats à gauche), saisit une question, voit les parties plaider round par round, lit le verdict en haut sans chercher, retrouve toute affaire passée.
+FIRST VIEWPORT: barre haute (marque + agents) ; rail 300px = projet + rôle ; colonne 860px = saisine (question, parties, rounds, Lancer) OU dossier (n°, question en titre, parties, registre, verdict, PV).
+FORM: greffe d'audience, choix utilisateur (pick #1 sur 7) ; tirage dégradé, seed ac8054a2.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="brand"><b>Adversarial Reasoning</b><span>Un agent propose, un autre attaque, un juge tranche.</span></div>
+  <div class="agents" id="backend-status">Chargement des agents…</div>
+  <button type="button" class="btn ghost" id="new-debate" hidden><svg class="i"><use href="#i-new"/></svg>Nouveau débat</button>
+</header>
+
+<div class="shell">
+  <aside class="rail" aria-label="Projets et débats">
+    <button type="button" class="btn docket-toggle" id="docket-toggle" aria-expanded="false" aria-controls="docket-body">
+      <span id="docket-summary">Projet</span><svg class="i"><use href="#i-chev"/></svg>
+    </button>
+    <div class="docket-body" id="docket-body">
+      <section>
+        <h2><label for="project">Projet</label></h2>
+        <div class="proj">
+          <select id="project"></select>
+          <button type="button" class="btn icon" id="new-project" title="Créer un projet" aria-label="Créer un projet"><svg class="i"><use href="#i-plus"/></svg></button>
+        </div>
+        <form class="np" id="np-form" hidden autocomplete="off">
+          <input type="text" id="np-name" placeholder="nom-du-projet" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" maxlength="64" aria-label="Nom du nouveau projet" required>
+          <button type="submit" class="btn">Créer</button>
+        </form>
+        <div class="np-err" id="np-error" hidden></div>
+        <div class="path" id="project-path"></div>
+      </section>
+      <section>
+        <h2>Débats du projet</h2>
+        <nav class="docket" id="history"></nav>
+      </section>
+    </div>
+  </aside>
+
+  <main>
+    <!-- Saisine : nouveau débat -->
+    <section class="col saisine" id="saisine">
+      <h1>Soumettre une question au débat</h1>
+      <p class="lede">Le proposant défend une réponse, le critique l'attaque round après round, le juge rend le verdict. Chaque tour s'affiche dès qu'il est écrit (10 à 60 s par tour pour un vrai agent).</p>
+      <form class="sheet" id="form" autocomplete="off">
+        <label class="field-label" for="question">Question ou affirmation</label>
+        <textarea id="question" required maxlength="4000" placeholder="Ex. : « Un index B-tree est toujours plus rapide qu'un scan séquentiel »"></textarea>
+        <div class="examples" id="examples"></div>
+
+        <div class="parties">
+          <div class="party p"><label for="proposer"><i></i>Proposant</label><select id="proposer"></select><small>défend une réponse</small></div>
+          <button type="button" class="btn icon swap" id="swap" title="Inverser proposant et critique" aria-label="Inverser proposant et critique"><svg class="i"><use href="#i-swap"/></svg></button>
+          <div class="party c"><label for="critic"><i></i>Critique</label><select id="critic"></select><small>cherche les failles</small></div>
+        </div>
+        <div class="bench">
+          <div class="party j"><label for="judge"><i></i>Juge</label><select id="judge"></select><small>tranche à la fin</small></div>
+          <fieldset class="rounds" id="rounds">
+            <legend>Rounds max</legend>
+            <div class="seg">
+              <label><input type="radio" name="rounds" value="1"><span>1</span></label>
+              <label><input type="radio" name="rounds" value="2"><span>2</span></label>
+              <label><input type="radio" name="rounds" value="3" checked><span>3</span></label>
+              <label><input type="radio" name="rounds" value="4"><span>4</span></label>
+              <label><input type="radio" name="rounds" value="5"><span>5</span></label>
+            </div>
+          </fieldset>
+        </div>
+        <div class="hint">Le débat s'arrête plus tôt si le critique accepte (VERDICT: ACCEPT).</div>
+        <div class="launch">
+          <button type="submit" class="btn primary" id="start">Lancer le débat</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Dossier : débat en cours ou archivé -->
+    <section class="col" id="case" hidden>
+      <div class="sheet case-head">
+        <div class="case-meta">
+          <span class="no" id="case-no"></span>
+          <span id="case-project"></span>
+          <span id="case-date"></span>
+          <span class="state" id="case-state"></span>
+        </div>
+        <h1 class="case-title" id="case-title"></h1>
+        <div class="versus" id="case-versus"></div>
+        <div class="register" id="scores">
+          <div><b id="s-round">0</b><span>round</span></div>
+          <div><b id="s-conf">–</b><span>confiance du proposant</span></div>
+          <div><b id="s-obj">–</b><span>objections ouvertes</span></div>
+        </div>
+        <div class="progress" id="progress" aria-hidden="true"></div>
+      </div>
+      <div class="verdict waiting" id="verdict" aria-live="polite">Verdict en attente : le juge statue après le dernier round.</div>
+      <div class="record" id="timeline"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const ROLE_LABEL = { proposer: "Proposant", critic: "Critique", judge: "Juge" };
+const WINNER_LABEL = { proposer: "Proposant", critic: "Critique", draw: "Match nul" };
+const STATE_LABEL = { running: "en cours", completed: "terminé", failed: "échec" };
+const EXAMPLES = [
+  "Les microservices réduisent toujours la complexité d'un système.",
+  "Should a 5-person startup write its backend in Rust?",
+  "Un test unitaire avec 100% de couverture garantit l'absence de bugs.",
+];
+let live = false, source = null, steps = 0, stepsDone = 0, timerId = null, lastSitting = null, caseCfg = null;
+
+// ---- safe mini-markdown: escape FIRST, then add a few formatting tags ----
+function esc(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function inline(s) {
+  return s.replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+function renderMarkdown(src) {
+  const out = []; const lines = esc(src).split("\n"); let list = null, para = [];
+  const flushPara = () => { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
+  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((i) => "<li>" + inline(i) + "</li>").join("")}</${list.tag}>`); list = null; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      flushPara(); flushList(); const code = [];
+      while (++i < lines.length && !lines[i].startsWith("```")) code.push(lines[i]);
+      out.push("<pre><code>" + code.join("\n") + "</code></pre>"); continue;
+    }
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { flushPara(); flushList(); const n = Math.min(m[1].length + 1, 4); out.push(`<h${n}>${inline(m[2])}</h${n}>`); continue; }
+    if ((m = line.match(/^\s*[-*]\s+(.*)$/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      flushPara(); const tag = /^\s*\d/.test(line) ? "ol" : "ul";
+      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+      list.items.push(m[1]); continue;
+    }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    flushList(); para.push(line);
+  }
+  flushPara(); flushList();
+  return out.join("");
+}
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("class", "i"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", "#i-" + name); s.append(u); return s; }
+function fmtDate(epoch) { return epoch ? new Date(epoch * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : ""; }
+
+// ---------- views ----------
+function showView(name) {
+  $("saisine").hidden = name !== "form";
+  $("case").hidden = name !== "case";
+  $("new-debate").hidden = name !== "case";
+}
+
+function resetCase() {
+  clearInterval(timerId);
+  $("timeline").replaceChildren(); lastSitting = null; stepsDone = 0; caseCfg = null;
+  $("s-round").textContent = "0"; $("s-conf").textContent = "–"; $("s-obj").textContent = "–";
+  const v = $("verdict"); v.className = "verdict waiting"; v.replaceChildren("Verdict en attente : le juge statue après le dernier round.");
+  ["case-no", "case-project", "case-date", "case-state", "case-title"].forEach((id) => { $(id).textContent = ""; });
+  $("case-versus").replaceChildren();
+  showView("case");
+}
+
+function setCaseHeader(id, cfg, createdAt) {
+  caseCfg = cfg;
+  $("case-no").textContent = "Débat n° " + id;
+  $("case-project").textContent = cfg.project ? "projet " + cfg.project : "";
+  $("case-date").textContent = fmtDate(createdAt);
+  $("case-title").textContent = cfg.question;
+  const vs = $("case-versus"); vs.replaceChildren();
+  vs.append(el("b", "p", cfg.proposer), el("em", null, "contre"), el("b", "c", cfg.critic), el("span", null, "· juge " + cfg.judge + " · " + cfg.max_rounds + " round(s) max"));
+  document.title = cfg.question.slice(0, 60) + " · Adversarial Reasoning";
+}
+
+function setState(state) { const s = $("case-state"); s.textContent = STATE_LABEL[state] || state; s.className = "state st " + state; }
+
+// ---------- transcript ----------
+function chipsFor(role, st) {
+  const box = el("div", "chips");
+  if (!st) { box.append(el("span", "chip warn", "bloc status absent")); return box; }
+  if (role === "proposer") {
+    if (st.CONFIDENCE) box.append(el("span", "chip", "confiance " + st.CONFIDENCE + " %"));
+    if (st.CONCEDED && st.CONCEDED !== "0") box.append(el("span", "chip", st.CONCEDED + " concédé(s)"));
+    if (st.POSITION_CHANGED === "true") box.append(el("span", "chip", "position ajustée"));
+  } else if (role === "critic") {
+    const acc = (st.VERDICT || "").toUpperCase() === "ACCEPT";
+    box.append(el("span", "chip " + (acc ? "ok" : "warn"), acc ? "ACCEPTE" : "CONTESTE"));
+    if (st.OBJECTIONS) box.append(el("span", "chip", st.OBJECTIONS + " objection(s)"));
+  } else {
+    if (st.CONFIDENCE) box.append(el("span", "chip", "confiance " + st.CONFIDENCE + " %"));
+  }
+  return box;
+}
+
+function sitting(role, round) {
+  const key = role === "judge" ? "judge" : String(round);
+  if (key === lastSitting) return;
+  lastSitting = key;
+  $("timeline").append(el("div", "sitting", role === "judge" ? "Délibéré" : round === 0 ? "Ouverture" : "Round " + round));
+}
+
+function turnHead(role, agent) {
+  const head = el("div", "turn-head");
+  head.append(el("span", "who", ROLE_LABEL[role] || role), el("span", "agent", agent));
+  return head;
+}
+
+function addPending(ev) {
+  sitting(ev.role, ev.round);
+  const card = el("article", "turn pending " + ev.role + (live ? " enter" : "")); card.id = "pending";
+  card.append(turnHead(ev.role, ev.agent));
+  const body = el("div", "turn-body"); const w = el("div", "writing");
+  w.append(el("i"), el("i"), el("i")); const t = el("span", null, "rédige… 0 s"); w.append(t); body.append(w); card.append(body);
+  $("timeline").append(card); card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const t0 = Date.now(); clearInterval(timerId);
+  timerId = setInterval(() => { t.textContent = "rédige… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
+}
+
+function addTurn(turn) {
+  clearInterval(timerId); const p = $("pending"); if (p) p.remove();
+  sitting(turn.role, turn.round);
+  const card = el("article", "turn " + turn.role + (live ? " enter" : ""));
+  if (turn.role === "judge") card.id = "judgment";
+  const head = turnHead(turn.role, turn.agent);
+  head.append(el("span", "tmeta", turn.duration_s + " s"));
+  head.append(chipsFor(turn.role, turn.status)); card.append(head);
+  const body = el("div", "turn-body"); body.innerHTML = renderMarkdown(turn.content); // content escaped in renderMarkdown
+  card.append(body); $("timeline").append(card);
+  if (turn.role !== "judge") card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (turn.role !== "judge") $("s-round").textContent = turn.round;
+  if (turn.role === "proposer" && turn.status?.CONFIDENCE) $("s-conf").textContent = turn.status.CONFIDENCE + " %";
+  if (turn.role === "critic" && turn.status?.OBJECTIONS) $("s-obj").textContent = turn.status.OBJECTIONS;
+  if (turn.role === "judge") renderVerdict(turn);
+  stepsDone++; drawProgress(false);
+}
+
+// The verdict is the payoff: it is stamped at the top of the case, not buried at the bottom.
+function renderVerdict(turn) {
+  const st = turn.status || {}; const winner = (st.WINNER || "").toLowerCase();
+  const v = $("verdict"); v.className = "verdict"; v.replaceChildren();
+  const stamp = el("div", "stamp " + (winner === "proposer" ? "p" : winner === "critic" ? "c" : ""));
+  stamp.append(el("small", null, winner === "draw" ? "verdict" : "gagnant"), document.createTextNode(WINNER_LABEL[winner] || st.WINNER || "sans verdict"));
+  const who = winner === "proposer" ? caseCfg?.proposer : winner === "critic" ? caseCfg?.critic : null;
+  const facts = el("div", "facts");
+  if (who) { const f = el("span", null, "agent "); f.append(el("b", null, who)); facts.append(f); }
+  if (st.CONFIDENCE) { const f = el("span", null, "confiance du juge "); f.append(el("b", null, st.CONFIDENCE + " %")); facts.append(f); }
+  if (st.UNRESOLVED) { const f = el("span", null, "points non résolus "); f.append(el("b", null, st.UNRESOLVED)); facts.append(f); }
+  const read = el("button", "btn ghost read"); read.type = "button"; read.append(icon("down"), "Lire les motifs du jugement");
+  read.addEventListener("click", () => $("judgment")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  v.append(stamp, facts, read);
+  requestAnimationFrame(() => v.classList.add("landed"));
+}
+
+function banner(cls, text) { $("timeline").append(el("div", "banner " + cls, text)); }
+
+function drawProgress(live) {
+  const bar = $("progress"); bar.replaceChildren();
+  for (let i = 0; i < steps; i++) bar.append(el("span", i < stepsDone ? "done" : (live && i === stepsDone ? "live" : "")));
+}
+
+function setRunning(running) {
+  for (const id of ["start", "swap", "question", "proposer", "critic", "judge", "rounds", "project", "new-project"]) $(id).disabled = running;
+  $("start").textContent = running ? "Débat en cours…" : "Lancer le débat";
+}
+
+function handle(ev) {
+  switch (ev.type) {
+    case "turn_started": addPending(ev); drawProgress(true); break;
+    case "turn_completed": addTurn(ev.turn); break;
+    case "converged":
+      banner("info", "Le critique accepte au round " + ev.round + " : le débat a convergé, passage au juge.");
+      steps = stepsDone + 1; drawProgress(false); break;
+    case "debate_completed": setState("completed"); finish(); break;
+    case "debate_failed": {
+      clearInterval(timerId); const p = $("pending"); if (p) p.remove();
+      banner("err", "Échec (" + ev.kind + ") : " + ev.message);
+      const v = $("verdict"); v.className = "verdict waiting"; v.textContent = "Pas de verdict : le débat a échoué.";
+      setState("failed"); finish(); break;
+    }
+  }
+}
+
+function finish() { if (source) { source.close(); source = null; } setRunning(false); loadHistory(); }
+
+function selectedRounds() { return Math.max(1, Math.min(5, parseInt(document.querySelector('input[name="rounds"]:checked')?.value, 10) || 3)); }
+
+async function start(e) {
+  e.preventDefault();
+  const rounds = selectedRounds();
+  const payload = { question: $("question").value.trim(), proposer: $("proposer").value, critic: $("critic").value, judge: $("judge").value, max_rounds: rounds, project: $("project").value };
+  if (!payload.question) return;
+  setRunning(true); live = true;
+  resetCase(); setState("running");
+  setCaseHeader("…", payload, Date.now() / 1000);
+  steps = 1 + rounds * 2 + 1; drawProgress(false);
+  let res;
+  try {
+    res = await fetch("/api/debates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  } catch (err) { banner("err", "Serveur injoignable : " + err.message); setRunning(false); return; }
+  const data = await res.json();
+  if (!res.ok) { banner("err", data.error || ("HTTP " + res.status)); setState("failed"); setRunning(false); return; }
+  history.replaceState(null, "", "#" + data.id);
+  $("case-no").textContent = "Débat n° " + data.id;
+  follow(data.id);
+}
+
+// Server replays every event from seq 0, so a reload (or #id link) rebuilds the whole debate.
+function follow(id) {
+  source = new EventSource("/api/debates/" + id + "/events");
+  source.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "debate_started") {
+      $("question").value = ev.config.question; steps = 1 + ev.config.max_rounds * 2 + 1;
+      setCaseHeader(id, ev.config, ev.ts);
+      if (ev.config.project && $("project").value !== ev.config.project) { $("project").value = ev.config.project; loadHistory(); }
+    }
+    handle(ev);
+  };
+  source.onerror = () => { if (source && source.readyState === EventSource.CLOSED) { banner("err", "Flux SSE interrompu."); finish(); } };
+}
+
+async function resumeFromHash() {
+  const id = location.hash.slice(1);
+  if (!/^[0-9a-f]{12}$/.test(id)) { showView("form"); markCurrent(); return; }
+  const res = await fetch("/api/debates/" + id);
+  if (!res.ok) { history.replaceState(null, "", location.pathname); showView("form"); return; }
+  const snap = await res.json();
+  if (source) { source.close(); source = null; }
+  markCurrent();
+  setRunning(snap.state === "running"); live = snap.state === "running";
+  resetCase(); setState(snap.state);
+  follow(id);
+}
+
+function newDebate() {
+  if (source) { source.close(); source = null; }
+  clearInterval(timerId); setRunning(false);
+  history.replaceState(null, "", location.pathname);
+  document.title = "Adversarial Reasoning";
+  showView("form"); markCurrent(); $("question").focus();
+}
+
+async function loadBackends() {
+  const res = await fetch("/api/backends"); const backends = await res.json();
+  const names = Object.keys(backends);
+  const defaults = { proposer: "claude", critic: "claude", judge: "claude" };
+  for (const role of ["proposer", "critic", "judge"]) {
+    const sel = $(role);
+    for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
+    sel.value = backends[defaults[role]]?.available ? defaults[role] : "mock";
+  }
+  const box = $("backend-status"); box.replaceChildren();
+  for (const n of names) {
+    const s = el("span"); s.title = backends[n].available ? n + " disponible" : n + " non configuré";
+    s.append(el("i", "dot" + (backends[n].available ? "" : " off")), n); box.append(s);
+  }
+}
+
+// ---------- projects & docket ----------
+function markCurrent() {
+  const id = location.hash.slice(1);
+  for (const a of $("history").querySelectorAll("a")) a.classList.toggle("current", a.dataset.id === id);
+}
+
+let projectsCache = [];
+function updateDocketSummary() {
+  const p = projectsCache.find((x) => x.name === $("project").value);
+  $("docket-summary").textContent = p ? "Projet " + p.name + " · " + p.debates + " débat(s)" : "Projet";
+  $("project-path").textContent = p ? "~/lldebat/" + p.name + "/FADO.csv" : "";
+}
+
+async function loadProjects(select) {
+  projectsCache = await (await fetch("/api/projects")).json();
+  const sel = $("project"); const keep = select || sel.value || localStorageGet("project") || "default";
+  sel.replaceChildren();
+  for (const p of projectsCache) { const o = el("option", null, p.name + " (" + p.debates + ")"); o.value = p.name; sel.append(o); }
+  sel.value = projectsCache.some((p) => p.name === keep) ? keep : (projectsCache[0]?.name || "");
+  updateDocketSummary();
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const name = $("project").value; const box = $("history"); box.replaceChildren();
+  updateDocketSummary();
+  if (!name) return;
+  const res = await fetch("/api/projects/" + encodeURIComponent(name) + "/debates");
+  if (!res.ok) return;
+  const list = await res.json();
+  const cached = projectsCache.find((x) => x.name === name); if (cached) { cached.debates = list.length; updateDocketSummary(); }
+  for (const d of list) {
+    const a = el("a"); a.href = "#" + d.id; a.dataset.id = d.id;
+    a.append(el("span", "q", d.question));
+    const m = el("span", "m"); const t = el("time", null, fmtDate(d.created_at));
+    m.append(t, el("span", null, d.proposer + " c. " + d.critic), el("span", "st " + d.state, STATE_LABEL[d.state] || d.state));
+    a.append(m); box.append(a);
+  }
+  if (!list.length) box.append(el("div", "docket-empty", "Aucun débat dans ce projet pour l'instant."));
+  markCurrent();
+}
+
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
+
+$("project").addEventListener("change", () => { localStorageSet("project", $("project").value); loadHistory(); });
+$("new-project").addEventListener("click", () => {
+  const f = $("np-form"); f.hidden = !f.hidden; $("np-error").hidden = true;
+  if (!f.hidden) $("np-name").focus();
+});
+$("np-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = $("np-name").value.trim(); if (!name) return;
+  const err = $("np-error"); err.hidden = true;
+  let res, data;
+  try {
+    res = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    data = await res.json();
+  } catch (ex) { err.textContent = "Serveur injoignable : " + ex.message; err.hidden = false; return; }
+  if (!res.ok) { err.textContent = (data.error || "HTTP " + res.status) + ". Lettres, chiffres, - ou _ uniquement."; err.hidden = false; return; }
+  $("np-name").value = ""; $("np-form").hidden = true;
+  localStorageSet("project", name); await loadProjects(name);
+});
+$("docket-toggle").addEventListener("click", () => {
+  const open = document.body.classList.toggle("docket-open");
+  $("docket-toggle").setAttribute("aria-expanded", String(open));
+});
+$("history").addEventListener("click", (e) => {
+  if (e.target.closest("a")) { document.body.classList.remove("docket-open"); $("docket-toggle").setAttribute("aria-expanded", "false"); }
+});
+$("new-debate").addEventListener("click", newDebate);
+window.addEventListener("hashchange", resumeFromHash);
+
+$("swap").addEventListener("click", () => { const p = $("proposer").value; $("proposer").value = $("critic").value; $("critic").value = p; });
+$("form").addEventListener("submit", start);
+for (const ex of EXAMPLES) { const b = el("button", null, ex); b.type = "button"; b.addEventListener("click", () => { $("question").value = ex; $("question").focus(); }); $("examples").append(b); }
+loadBackends().then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
+</script>
+</body>
+</html>
