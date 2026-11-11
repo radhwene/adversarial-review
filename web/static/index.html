@@ -5,236 +5,280 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Adversarial Reasoning</title>
 <style>
+/* ===== Pass A: tokens (7 families). Templates use these only. ===== */
 :root {
   color-scheme: light;
-  --paper: #f2f3f5; --sheet: #ffffff; --rail: #e8eaee; --ink: #15171c; --ink-2: #4a4f5a; --ink-3: #6b707b;
-  --rule: #d5d8de; --rule-strong: #b9bdc6;
-  --accent: #1e3a8a; --accent-ink: #ffffff;
-  --prop: #1f4fa8; --prop-wash: #eaf0fb;
-  --crit: #9b2335; --crit-wash: #f9ecee;
-  --judge: #15171c; --judge-wash: #f6f4ee;
-  --ok: #1d6b45; --warn: #9b2335;
-  --code: #eef0f3; --sel: #c9d6f2;
+  /* color: semantic roles */
+  --papier: #f2f3f5; --surface: #ffffff; --rail: #e8eaee;
+  --encre: #15171c; --encre-2: #4a4f5a; --encre-3: #636874;
+  --filet: #d5d8de; --filet-fort: #b9bdc6;
+  --accent: #1e3a8a; --sur-accent: #ffffff;
+  --prop: #1f4fa8; --prop-lavis: #eaf0fb;
+  --crit: #9b2335; --crit-lavis: #f9ecee;
+  --juge: #15171c; --juge-lavis: #f6f4ee;
+  --succes: #1d6b45; --alerte: #9b2335;
+  --code: #eef0f3; --selection: #c9d6f2;
+  /* spacing: base-4 */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px;
+  --space-7: 32px; --space-8: 40px; --space-9: 48px; --space-10: 64px; --space-11: 80px; --space-12: 96px;
+  /* type scale */
+  --fs-eyebrow: 12px; --fs-sm: 13px; --fs-base: 15px; --fs-md: 16px; --fs-lg: 18px; --fs-xl: 22px; --fs-2xl: 28px;
   --serif: "Iowan Old Style", "Charter", "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-  --shadow: 0 1px 2px rgba(20, 24, 33, .06), 0 6px 20px rgba(20, 24, 33, .06);
-  --ease: cubic-bezier(.16, 1, .3, 1);
+  /* radii: two values */
+  --rayon: 6px; --rayon-grand: 12px;
+  /* shadows, named by purpose */
+  --ombre-douce: 0 1px 2px rgba(20, 24, 33, .06), 0 6px 20px rgba(20, 24, 33, .06);
+  --ombre-cartouche: 0 2px 4px rgba(20, 24, 33, .08), 0 12px 32px rgba(20, 24, 33, .10);
+  /* motion */
+  --t-fast: 120ms ease-out; --t-base: 220ms ease-out; --t-slow: 360ms cubic-bezier(.2, .7, .2, 1);
+  /* z-index scale */
+  --z-base: 0; --z-sticky: 10; --z-header: 20; --z-modal: 30;
+  /* layout */
+  --tap: 44px; --header-h: 56px; --rail-w: 300px; --col-w: 860px; --label-w: 132px;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --paper: #0f1217; --sheet: #161a21; --rail: #12151b; --ink: #e7e9ee; --ink-2: #b4b9c4; --ink-3: #8c919d;
-    --rule: #272c35; --rule-strong: #3a404b;
-    --accent: #8fb0f5; --accent-ink: #0f1217;
-    --prop: #8fb0f5; --prop-wash: #172033;
-    --crit: #f0909c; --crit-wash: #2a171b;
-    --judge: #e7e9ee; --judge-wash: #1c1f26;
-    --ok: #7ccfa2; --warn: #f0909c;
-    --code: #1f242d; --sel: #2c4170;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+    --papier: #0f1217; --surface: #161a21; --rail: #12151b;
+    --encre: #e7e9ee; --encre-2: #b4b9c4; --encre-3: #9095a1;
+    --filet: #272c35; --filet-fort: #3a404b;
+    --accent: #8fb0f5; --sur-accent: #0f1217;
+    --prop: #8fb0f5; --prop-lavis: #172033;
+    --crit: #f0909c; --crit-lavis: #2a171b;
+    --juge: #e7e9ee; --juge-lavis: #1c1f26;
+    --succes: #7ccfa2; --alerte: #f0909c;
+    --code: #1f242d; --selection: #2c4170;
+    --ombre-douce: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+    --ombre-cartouche: 0 2px 6px rgba(0, 0, 0, .35), 0 14px 36px rgba(0, 0, 0, .35);
   }
 }
+
+/* ===== base ===== */
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); caret-color: var(--accent); }
-::selection { background: var(--sel); color: var(--ink); }
-* { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--header-h) + var(--space-4)); }
+body { margin: 0; background: var(--papier); color: var(--encre); font: var(--fs-base)/1.5 var(--sans); caret-color: var(--accent); }
+::selection { background: var(--selection); color: var(--encre); }
+* { scrollbar-width: thin; scrollbar-color: var(--filet-fort) transparent; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rayon); }
 button, select, input, textarea { font: inherit; color: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sprite { position: absolute; width: 0; height: 0; }
 svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.skip { position: absolute; left: var(--space-4); top: calc(-1 * var(--space-12)); z-index: var(--z-modal); padding: var(--space-3) var(--space-4);
+  background: var(--accent); color: var(--sur-accent); border-radius: var(--rayon); font-weight: 600; text-decoration: none; }
+.skip:focus { top: var(--space-2); }
+kbd { font: var(--fs-eyebrow)/1 var(--mono); padding: 2px var(--space-1); border: 1px solid var(--filet-fort); border-radius: var(--rayon); background: var(--surface); }
 
-/* ---------- shell ---------- */
-.top { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 16px; height: 56px; padding: 0 20px;
-  background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--rule); }
-.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.brand b { font: 600 17px/1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
-.brand span { color: var(--ink-3); font-size: 13px; white-space: nowrap; }
-.agents { margin-left: auto; display: flex; gap: 12px; font-size: 13px; color: var(--ink-2); }
-.agents span { display: inline-flex; align-items: center; gap: 6px; }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-.dot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
-.shell { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: calc(100vh - 56px); }
+/* ===== Pass B: layout utilities ===== */
+.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.stack-2 { display: flex; flex-direction: column; gap: var(--space-2); }
+.stack-5 { display: flex; flex-direction: column; gap: var(--space-5); }
 
-/* ---------- docket (rail) ---------- */
-.rail { border-right: 1px solid var(--rule); background: var(--rail); padding: 18px 14px 24px; position: sticky; top: 56px;
-  height: calc(100vh - 56px); overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
-.rail h2 { font: 600 12px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; }
-.docket-body { display: flex; flex-direction: column; gap: 22px; }
-.proj { display: flex; gap: 6px; }
+/* ===== Pass B: components ===== */
+/* buttons: 4 variants (default, primary, ghost, icon) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--tap); padding: 0 var(--space-4);
+  border: 1px solid var(--filet-fort); border-radius: var(--rayon); background: var(--surface); font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast); }
+.btn:hover { border-color: var(--encre-3); transform: translateY(-1px); box-shadow: var(--ombre-douce); }
+.btn:active { transform: none; box-shadow: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--sur-accent); padding: 0 var(--space-6); font-size: var(--fs-base); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--encre-2); }
+.btn.ghost:hover { background: var(--surface); border-color: var(--filet); }
+.btn.icon { width: var(--tap); padding: 0; }
+.btn:disabled, select:disabled, textarea:disabled, input:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* fields */
+.field { width: 100%; min-height: var(--tap); padding: 0 var(--space-3); background: var(--surface); border: 1px solid var(--filet-fort); border-radius: var(--rayon); transition: border-color var(--t-fast); }
+.field:hover { border-color: var(--encre-3); }
+.field::placeholder { color: var(--encre-3); }
+.label { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); font-size: var(--fs-sm); font-weight: 600; color: var(--encre-2); }
+.help { margin-top: var(--space-1); font-size: var(--fs-eyebrow); color: var(--encre-3); }
+.swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+
+/* card */
+.card { background: var(--surface); border: 1px solid var(--filet); border-radius: var(--rayon-grand); box-shadow: var(--ombre-douce); padding: var(--space-6); }
+
+/* banner */
+.banner { margin: var(--space-4) 0; padding: var(--space-3) var(--space-4); border-radius: var(--rayon); font-size: var(--fs-sm); border: 1px solid var(--filet); background: var(--surface); color: var(--encre-2); }
+.banner.err { background: var(--crit-lavis); color: var(--alerte); border-color: color-mix(in srgb, var(--alerte) 45%, transparent); }
+
+/* chip */
+.chip { display: inline-block; padding: 2px var(--space-2); border-radius: var(--rayon); background: var(--w, var(--code)); color: var(--encre-2); font-size: var(--fs-eyebrow); line-height: 1.4; white-space: nowrap; }
+.chip.ok { color: var(--succes); background: color-mix(in srgb, var(--succes) 12%, transparent); font-weight: 700; }
+.chip.warn { color: var(--alerte); background: color-mix(in srgb, var(--alerte) 12%, transparent); font-weight: 700; }
+
+/* state text */
+.st { font-size: var(--fs-eyebrow); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.st.completed { color: var(--succes); } .st.failed { color: var(--alerte); } .st.running { color: var(--accent); }
+
+/* ===== Pass C: page ===== */
+.top { position: sticky; top: 0; z-index: var(--z-header); display: flex; align-items: center; gap: var(--space-4); height: var(--header-h); padding: 0 var(--space-5);
+  background: color-mix(in srgb, var(--papier) 88%, transparent); backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--filet); }
+.brand { display: flex; align-items: baseline; gap: var(--space-3); min-width: 0; }
+.brand b { font: 600 var(--fs-lg)/1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
+.brand span { color: var(--encre-3); font-size: var(--fs-sm); white-space: nowrap; }
+.agents { margin-left: auto; display: flex; gap: var(--space-3); font-size: var(--fs-sm); color: var(--encre-2); }
+.agents span { display: inline-flex; align-items: center; gap: var(--space-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--succes); }
+.dot.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--encre-3); }
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); min-height: calc(100vh - var(--header-h)); }
+
+/* rail */
+.rail { position: sticky; top: var(--header-h); height: calc(100vh - var(--header-h)); overflow-y: auto; padding: var(--space-5) var(--space-4) var(--space-6);
+  background: var(--rail); border-right: 1px solid var(--filet); }
+.rail-title { margin: 0 0 var(--space-2); font: 700 var(--fs-eyebrow)/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--encre-3); }
+.rail .docket-toggle { display: none; }
+.proj { display: flex; gap: var(--space-2); }
 .proj select { flex: 1; min-width: 0; }
-.np { display: flex; gap: 6px; margin-top: 8px; }
+.np { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 .np input { flex: 1; min-width: 0; }
-.np-err { color: var(--warn); font-size: 13px; margin-top: 6px; }
-.path { font: 12px/1.4 var(--mono); color: var(--ink-3); margin-top: 6px; overflow-wrap: anywhere; }
-.docket { display: flex; flex-direction: column; gap: 2px; }
-.docket a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--ink); text-decoration: none; transition: background .15s; }
-.docket a:hover { background: color-mix(in srgb, var(--sheet) 70%, transparent); }
-.docket a.current { background: var(--sheet); box-shadow: var(--shadow); }
-.docket .q { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 1.35; }
-.docket .m { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.np-err { margin-top: var(--space-2); color: var(--alerte); font-size: var(--fs-sm); }
+.path { margin-top: var(--space-2); font: var(--fs-eyebrow)/1.4 var(--mono); color: var(--encre-3); overflow-wrap: anywhere; }
+.docket { display: flex; flex-direction: column; gap: 2px; margin-top: var(--space-2); }
+.docket a { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--rayon); color: var(--encre); text-decoration: none; transition: background var(--t-fast); }
+.docket a:hover { background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.docket a.current { background: var(--surface); box-shadow: var(--ombre-douce); }
+.docket .q { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: var(--fs-sm); line-height: 1.4; }
+.docket .m { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); align-items: center; margin-top: var(--space-1); font-size: var(--fs-eyebrow); color: var(--encre-3); }
 .docket .m > * { white-space: nowrap; }
 .docket .m time { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.docket .st { margin-left: auto; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-.st.completed { color: var(--ok); } .st.failed { color: var(--warn); } .st.running { color: var(--accent); }
-.docket-empty { color: var(--ink-3); font-size: 14px; padding: 8px 10px; }
-.rail .docket-toggle { display: none; }
+.docket .m .st { margin-left: auto; }
+.docket-empty { padding: var(--space-2) var(--space-3); color: var(--encre-3); font-size: var(--fs-sm); }
 
-/* ---------- controls ---------- */
-select, input[type=text], textarea { background: var(--sheet); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 8px 10px; transition: border-color .15s; }
-select:hover, input[type=text]:hover, textarea:hover { border-color: var(--ink-3); }
-textarea::placeholder, input::placeholder { color: var(--ink-3); }
-.btn { white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 8px; padding: 8px 14px; cursor: pointer;
-  border: 1px solid var(--rule-strong); background: var(--sheet); font-weight: 600; font-size: 14px; transition: background .15s, border-color .15s, transform .1s; }
-.btn:hover { border-color: var(--ink-3); }
-.btn:active { transform: translateY(1px); }
-.btn.icon { padding: 8px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); padding: 11px 20px; font-size: 15px; }
-.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--ink)); }
-.btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
-.btn.ghost:hover { background: var(--sheet); border-color: var(--rule); }
-.btn:disabled, select:disabled, textarea:disabled, input:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+/* main */
+main { padding: var(--space-7) var(--space-6) var(--space-12); }
+main:focus { outline: none; }
+.col { max-width: var(--col-w); margin: 0 auto; }
 
-/* ---------- main ---------- */
-main { padding: 32px 24px 96px; }
-.col { max-width: 860px; margin: 0 auto; }
-
-/* saisine (new debate form) */
-.saisine h1 { font: 600 30px/1.15 var(--serif); letter-spacing: -.015em; margin: 8px 0 6px; text-wrap: balance; }
-.saisine .lede { color: var(--ink-2); margin: 0 0 24px; max-width: 60ch; }
-.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; box-shadow: var(--shadow); }
-.saisine .sheet { padding: 20px; }
-.field-label { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
-#question { width: 100%; min-height: 128px; resize: vertical; font: 17px/1.5 var(--serif); padding: 12px 14px; }
-.examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.examples button { border: 1px solid var(--rule); background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 13px; color: var(--ink-2); cursor: pointer; text-align: left; }
-.examples button:hover { border-color: var(--ink-3); color: var(--ink); }
-.parties { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--rule); }
-.party label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-.party label i { width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
-.party select { width: 100%; }
-.party.p { --c: var(--prop); } .party.c { --c: var(--crit); } .party.j { --c: var(--judge); }
-.party small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 4px; }
-.bench { display: grid; grid-template-columns: 1fr auto; gap: 16px 24px; align-items: end; margin-top: 16px; }
-fieldset.rounds { border: 0; margin: 0; padding: 0; min-width: 0; }
-fieldset.rounds legend { font-size: 13px; font-weight: 600; padding: 0; margin-bottom: 6px; }
-.seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: 8px; overflow: hidden; }
+/* new debate */
+.page-title { margin: var(--space-2) 0 var(--space-2); font: 600 var(--fs-2xl)/1.1 var(--serif); letter-spacing: -.015em; text-wrap: balance; }
+.lede { margin: 0 0 var(--space-6); max-width: 60ch; color: var(--encre-2); }
+#question { min-height: 128px; padding: var(--space-3) var(--space-4); resize: vertical; font: var(--fs-lg)/1.5 var(--serif); }
+.examples button { min-height: var(--tap); padding: var(--space-2) var(--space-3); border: 1px solid var(--filet); border-radius: var(--rayon); background: transparent;
+  color: var(--encre-2); font-size: var(--fs-sm); text-align: left; cursor: pointer; transition: border-color var(--t-fast), color var(--t-fast); }
+.examples button:hover { border-color: var(--encre-3); color: var(--encre); }
+.parties { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-3); align-items: center; padding-top: var(--space-5); border-top: 1px solid var(--filet); }
+.party.p { --c: var(--prop); } .party.c { --c: var(--crit); } .party.j { --c: var(--juge); }
+.bench { display: grid; grid-template-columns: 1fr auto; gap: var(--space-4) var(--space-6); align-items: start; }
+fieldset.rounds { min-width: 0; margin: 0; padding: 0; border: 0; }
+fieldset.rounds legend { padding: 0; }
+.seg { display: inline-flex; border: 1px solid var(--filet-fort); border-radius: var(--rayon); overflow: hidden; }
 .seg label { position: relative; }
-.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.seg span { display: block; min-width: 40px; padding: 7px 0; text-align: center; font-variant-numeric: tabular-nums; border-left: 1px solid var(--rule); transition: background .15s; }
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg span { display: grid; place-items: center; min-width: var(--tap); min-height: var(--tap); border-left: 1px solid var(--filet); font-variant-numeric: tabular-nums; transition: background var(--t-fast); }
 .seg label:first-child span { border-left: 0; }
-.seg input:checked + span { background: var(--ink); color: var(--paper); font-weight: 600; }
+.seg input:checked + span { background: var(--encre); color: var(--papier); font-weight: 700; }
 .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
 .seg input:disabled + span { opacity: .55; }
-.hint { color: var(--ink-3); font-size: 13px; margin-top: 6px; }
-.launch { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 24px; }
+.launch { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--space-3); }
 
-/* case file */
-.case-head { padding: 22px 24px 18px; }
-.case-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: var(--ink-3); }
+/* case */
+.case-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-4); font-size: var(--fs-sm); color: var(--encre-3); }
 .case-meta .no { font-family: var(--mono); }
-.case-meta .state { margin-left: auto; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 12px; }
-.case-title { font: 600 24px/1.25 var(--serif); letter-spacing: -.01em; margin: 10px 0 12px; text-wrap: balance; overflow-wrap: anywhere; }
-.versus { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
-.versus b { font-weight: 600; } .versus .p { color: var(--prop); } .versus .c { color: var(--crit); }
-.versus em { font-style: italic; font-family: var(--serif); color: var(--ink-3); }
-.register { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; border-top: 1px solid var(--rule); }
-.register div { padding: 12px 0 0; }
-.register div + div { padding-left: 16px; border-left: 1px solid var(--rule); }
-.register b { display: block; font: 600 20px/1.1 var(--sans); font-variant-numeric: tabular-nums; }
-.register span { font-size: 12px; color: var(--ink-3); }
-.progress { display: flex; gap: 3px; margin-top: 16px; }
-.progress span { flex: 1; height: 3px; border-radius: 2px; background: var(--rule); transition: background .25s; }
-.progress span.done { background: var(--ink-2); }
+.case-meta .st { margin-left: auto; }
+.case-title { margin: var(--space-3) 0; font: 600 var(--fs-xl)/1.25 var(--serif); letter-spacing: -.01em; text-wrap: balance; overflow-wrap: anywhere; }
+.versus { font-size: var(--fs-sm); color: var(--encre-2); }
+.versus b { font-size: var(--fs-base); } .versus .p { color: var(--prop); } .versus .c { color: var(--crit); }
+.versus em { font-family: var(--serif); color: var(--encre-3); }
+.case-actions { margin-top: var(--space-4); }
+.register { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--space-4); border-top: 1px solid var(--filet); }
+.register div { padding-top: var(--space-3); }
+.register div + div { padding-left: var(--space-4); border-left: 1px solid var(--filet); }
+.register b { display: block; font: 700 var(--fs-xl)/1.1 var(--sans); font-variant-numeric: tabular-nums; }
+.register span { font-size: var(--fs-eyebrow); color: var(--encre-3); }
+.progress { display: flex; gap: var(--space-1); margin-top: var(--space-4); }
+.progress span { flex: 1; height: 3px; border-radius: 2px; background: var(--filet); transition: background var(--t-base); }
+.progress span.done { background: var(--encre-2); }
 .progress span.live { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 
-/* verdict (the payoff) */
-.verdict { margin-top: 16px; padding: 20px 24px; display: grid; grid-template-columns: auto 1fr; gap: 6px 24px; align-items: center;
-  border: 1px solid var(--rule-strong); border-radius: 12px; background: var(--judge-wash); box-shadow: var(--shadow); }
-.verdict.waiting { grid-template-columns: 1fr; box-shadow: none; background: transparent; border-style: dashed; color: var(--ink-3); font-size: 14px; }
-.stamp { --c: var(--judge); grid-row: span 2; display: inline-block; padding: 8px 14px; border: 2.5px solid var(--c); border-radius: 6px; color: var(--c);
-  font: 700 15px/1.1 var(--sans); letter-spacing: .12em; text-transform: uppercase; transform: rotate(-3deg); text-align: center;
-  box-shadow: inset 0 0 0 2px var(--judge-wash), inset 0 0 0 3.5px var(--c); }
-.stamp small { display: block; font-size: 10px; letter-spacing: .16em; opacity: .8; margin-bottom: 3px; }
+/* verdict: the payoff */
+.verdict { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-6); align-items: center; margin-top: var(--space-4); padding: var(--space-5) var(--space-6);
+  background: var(--juge-lavis); border: 1px solid var(--filet-fort); border-radius: var(--rayon-grand); box-shadow: var(--ombre-cartouche); }
+.verdict.waiting { grid-template-columns: 1fr; background: transparent; border-style: dashed; box-shadow: none; color: var(--encre-3); font-size: var(--fs-sm); }
+.stamp { --c: var(--juge); grid-row: span 2; display: inline-block; padding: var(--space-2) var(--space-4); border: 2.5px solid var(--c); border-radius: var(--rayon); color: var(--c);
+  font: 700 var(--fs-base)/1.1 var(--sans); letter-spacing: .12em; text-align: center; text-transform: uppercase; transform: rotate(-3deg);
+  box-shadow: inset 0 0 0 2px var(--juge-lavis), inset 0 0 0 3.5px var(--c); }
+.stamp small { display: block; margin-bottom: 2px; font-size: 10px; letter-spacing: .16em; opacity: .8; }
 .stamp.p { --c: var(--prop); } .stamp.c { --c: var(--crit); }
-.verdict.landed .stamp { animation: stamp .42s var(--ease) both; }
-@keyframes stamp { from { transform: rotate(-9deg) scale(1.35); opacity: 0; filter: blur(2px); } to { transform: rotate(-3deg) scale(1); opacity: 1; filter: none; } }
-.verdict .facts { font-size: 14px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
-.verdict .facts b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.verdict.landed .stamp { animation: stamp var(--t-slow) both; }
+@keyframes stamp { from { transform: rotate(-9deg) scale(1.35); opacity: 0; } to { transform: rotate(-3deg) scale(1); opacity: 1; } }
+.verdict .facts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); font-size: var(--fs-sm); color: var(--encre-2); }
+.verdict .facts b { color: var(--encre); font-variant-numeric: tabular-nums; }
 .verdict .read { justify-self: start; }
 
 /* transcript */
-.record { margin-top: 28px; }
-.sitting { display: flex; align-items: center; gap: 14px; margin: 28px 0 14px; color: var(--ink-3); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
-.sitting::before, .sitting::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
-.turn { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 20px; padding: 16px 0; }
-.turn + .turn { border-top: 1px solid var(--rule); }
-.turn.proposer { --c: var(--prop); --w: var(--prop-wash); }
-.turn.critic { --c: var(--crit); --w: var(--crit-wash); }
-.turn.judge { --c: var(--judge); --w: var(--judge-wash); }
-.turn-head { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding-top: 2px; }
-.who { font: 700 12px/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
-.agent { font-size: 14px; font-weight: 600; }
-.tmeta { font: 12px/1.3 var(--mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
-.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.chip { font-size: 11px; line-height: 1.2; padding: 3px 7px; border-radius: 4px; background: var(--w); color: var(--ink-2); white-space: nowrap; }
-.chip.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); font-weight: 700; letter-spacing: .04em; }
-.chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); font-weight: 700; letter-spacing: .04em; }
-.turn-body { font: 16px/1.62 var(--serif); max-width: 68ch; overflow-wrap: anywhere; padding-left: 16px; border-left: 1px solid var(--c); }
+.record { margin-top: var(--space-7); }
+.sitting { display: flex; align-items: center; gap: var(--space-4); margin: var(--space-7) 0 var(--space-3); color: var(--encre-3); font-size: var(--fs-eyebrow); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.sitting::before, .sitting::after { content: ""; flex: 1; height: 1px; background: var(--filet); }
+.turn { display: grid; grid-template-columns: var(--label-w) minmax(0, 1fr); gap: 0 var(--space-5); padding: var(--space-4) 0; }
+.turn + .turn { border-top: 1px solid var(--filet); }
+.turn.proposer { --c: var(--prop); --w: var(--prop-lavis); }
+.turn.critic { --c: var(--crit); --w: var(--crit-lavis); }
+.turn.judge { --c: var(--juge); --w: var(--juge-lavis); }
+.turn-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); padding-top: 2px; }
+.who { font: 700 var(--fs-eyebrow)/1.2 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+.agent { font-size: var(--fs-sm); font-weight: 600; }
+.tmeta { font: var(--fs-eyebrow)/1.3 var(--mono); color: var(--encre-3); font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+.turn-body { max-width: 68ch; padding-left: var(--space-4); border-left: 1px solid var(--c); font: var(--fs-md)/1.65 var(--serif); overflow-wrap: anywhere; }
 .turn-body > :first-child { margin-top: 0; }
 .turn-body > :last-child { margin-bottom: 0; }
-.turn-body h2, .turn-body h3, .turn-body h4 { font: 700 15px/1.3 var(--sans); margin: 18px 0 6px; }
-.turn-body p { margin: 0 0 12px; }
-.turn-body ul, .turn-body ol { margin: 0 0 12px; padding-left: 22px; }
-.turn-body li { margin-bottom: 4px; }
-.turn-body code { font: 13.5px var(--mono); background: var(--code); padding: 1px 5px; border-radius: 4px; }
-.turn-body pre { background: var(--code); padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
-.turn-body pre code { background: none; padding: 0; }
-.turn.judge .turn-body { border-left: 0; padding: 18px 20px; background: var(--judge-wash); border: 1px solid var(--rule-strong); border-radius: 10px;
-  box-shadow: inset 0 0 0 3px var(--judge-wash), inset 0 0 0 4px var(--rule); max-width: none; }
-.pending .turn-body { color: var(--ink-3); font: 14px/1.5 var(--sans); }
-.writing { display: flex; flex-direction: column; gap: 8px; }
-.writing i { display: block; height: 10px; border-radius: 3px; background: linear-gradient(90deg, var(--rule) 0%, var(--w) 50%, var(--rule) 100%); background-size: 200% 100%; animation: sheen 1.6s linear infinite; }
+.turn-body h2, .turn-body h3, .turn-body h4 { margin: var(--space-5) 0 var(--space-2); font: 700 var(--fs-base)/1.4 var(--sans); }
+.turn-body p { margin: 0 0 var(--space-3); }
+.turn-body ul, .turn-body ol { margin: 0 0 var(--space-3); padding-left: var(--space-6); }
+.turn-body li { margin-bottom: var(--space-1); }
+.turn-body code { padding: 1px var(--space-1); border-radius: var(--rayon); background: var(--code); font: var(--fs-sm) var(--mono); }
+.turn-body pre { padding: var(--space-3) var(--space-4); border-radius: var(--rayon); background: var(--code); overflow-x: auto; font-size: var(--fs-sm); line-height: 1.5; }
+.turn-body pre code { padding: 0; background: none; }
+.turn.judge .turn-body { max-width: none; padding: var(--space-5); background: var(--juge-lavis); border: 1px solid var(--filet-fort); border-radius: var(--rayon-grand);
+  box-shadow: inset 0 0 0 3px var(--juge-lavis), inset 0 0 0 4px var(--filet); }
+.pending .turn-body { color: var(--encre-3); font: var(--fs-sm)/1.5 var(--sans); }
+.writing i { display: block; height: 10px; border-radius: 2px; background: linear-gradient(90deg, var(--filet) 0%, var(--w) 50%, var(--filet) 100%); background-size: 200% 100%; animation: sheen 1.6s linear infinite; }
 .writing i:nth-child(1) { width: 92%; } .writing i:nth-child(2) { width: 78%; } .writing i:nth-child(3) { width: 54%; }
 @keyframes sheen { to { background-position: -200% 0; } }
-.writing span { font-variant-numeric: tabular-nums; margin-top: 2px; }
-.banner { margin: 16px 0; padding: 12px 16px; border-radius: 10px; font-size: 14px; }
-.banner.err { background: var(--crit-wash); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
-.banner.info { background: var(--sheet); color: var(--ink-2); border: 1px solid var(--rule); }
-.turn.enter { animation: rise .32s var(--ease) both; }
+.writing span { font-variant-numeric: tabular-nums; }
+.turn.enter { animation: rise var(--t-slow) both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 
-/* ---------- small screens ---------- */
+/* follow-live pill */
+.follow { position: fixed; right: var(--space-6); bottom: var(--space-6); z-index: var(--z-sticky); box-shadow: var(--ombre-cartouche); }
+
+/* ===== responsive ===== */
+@media (max-width: 1024px) {
+  .brand span { display: none; }
+}
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .brand span, .agents { display: none; }
-  .top { padding: 0 16px; }
-  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); padding: 10px 16px 12px; gap: 10px; }
+  .agents { display: none; }
+  .top { padding: 0 var(--space-4); }
+  .rail { position: static; height: auto; padding: var(--space-3) var(--space-4); border-right: 0; border-bottom: 1px solid var(--filet); }
   .rail .docket-toggle { display: flex; width: 100%; justify-content: space-between; }
-  .rail .docket-body { display: none; }
-  body.docket-open .rail .docket-body { display: flex; flex-direction: column; gap: 14px; }
+  .rail .docket-body { display: none; margin-top: var(--space-4); }
+  body.docket-open .rail .docket-body { display: flex; }
   body.docket-open .docket-toggle svg { transform: rotate(180deg); }
   .docket { max-height: 50vh; overflow-y: auto; }
-  main { padding: 20px 16px 72px; }
-  .saisine h1 { font-size: 24px; }
-  .saisine .sheet { padding: 16px; }
+  main { padding: var(--space-5) var(--space-4) var(--space-11); }
+  .page-title { font-size: var(--fs-xl); }
+  .card { padding: var(--space-4); }
   .parties { grid-template-columns: 1fr; }
   .parties .swap { justify-self: start; }
   .bench { grid-template-columns: 1fr; }
   .launch .btn.primary { flex: 1; }
-  .case-head { padding: 18px 16px 14px; }
-  .case-title { font-size: 20px; }
-  .turn { grid-template-columns: 1fr; gap: 8px; }
-  .turn-head { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .case-title { font-size: var(--fs-lg); }
+  .turn { grid-template-columns: 1fr; gap: var(--space-2); }
+  .turn-head { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
   .chips { margin-top: 0; }
-  .turn-body { padding-left: 12px; }
-  .verdict { grid-template-columns: 1fr; padding: 18px 16px; justify-items: start; }
+  .turn-body { padding-left: var(--space-3); }
+  .verdict { grid-template-columns: 1fr; justify-items: start; padding: var(--space-4); }
   .stamp { grid-row: auto; }
+  .follow { right: var(--space-4); bottom: var(--space-4); }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
 </style>
 </head>
@@ -247,65 +291,74 @@ FIRST VIEWPORT: barre haute (marque + agents) ; rail 300px = projet + rôle ; co
 FORM: greffe d'audience, choix utilisateur (pick #1 sur 7) ; tirage dégradé, seed ac8054a2.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<a class="skip" href="#main">Aller au contenu</a>
+<svg class="sprite" aria-hidden="true">
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-swap" viewBox="0 0 24 24"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M9 9h11v11H9zM5 15H4V4h11v1"/></symbol>
 </svg>
 
 <header class="top">
   <div class="brand"><b>Adversarial Reasoning</b><span>Un agent propose, un autre attaque, un juge tranche.</span></div>
   <div class="agents" id="backend-status">Chargement des agents…</div>
-  <button type="button" class="btn ghost" id="new-debate" hidden><svg class="i"><use href="#i-new"/></svg>Nouveau débat</button>
+  <button type="button" class="btn ghost" id="new-debate" hidden><svg class="i" aria-hidden="true"><use href="#i-new"/></svg>Nouveau débat</button>
 </header>
 
 <div class="shell">
   <aside class="rail" aria-label="Projets et débats">
     <button type="button" class="btn docket-toggle" id="docket-toggle" aria-expanded="false" aria-controls="docket-body">
-      <span id="docket-summary">Projet</span><svg class="i"><use href="#i-chev"/></svg>
+      <span id="docket-summary">Projet</span><svg class="i" aria-hidden="true"><use href="#i-chev"/></svg>
     </button>
-    <div class="docket-body" id="docket-body">
+    <div class="docket-body stack-5" id="docket-body">
       <section>
-        <h2><label for="project">Projet</label></h2>
+        <h2 class="rail-title"><label for="project">Projet</label></h2>
         <div class="proj">
-          <select id="project"></select>
-          <button type="button" class="btn icon" id="new-project" title="Créer un projet" aria-label="Créer un projet"><svg class="i"><use href="#i-plus"/></svg></button>
+          <select class="field" id="project"></select>
+          <button type="button" class="btn icon" id="new-project" title="Créer un projet" aria-label="Créer un projet"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
         </div>
         <form class="np" id="np-form" hidden autocomplete="off">
-          <input type="text" id="np-name" placeholder="nom-du-projet" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" maxlength="64" aria-label="Nom du nouveau projet" required>
+          <label class="sr-only" for="np-name">Nom du nouveau projet</label>
+          <input class="field" type="text" id="np-name" placeholder="nom-du-projet" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" maxlength="64" required>
           <button type="submit" class="btn">Créer</button>
         </form>
-        <div class="np-err" id="np-error" hidden></div>
+        <div class="np-err" id="np-error" role="alert" hidden></div>
         <div class="path" id="project-path"></div>
       </section>
       <section>
-        <h2>Débats du projet</h2>
-        <nav class="docket" id="history"></nav>
+        <h2 class="rail-title" id="history-title">Débats du projet</h2>
+        <label class="sr-only" for="history-filter">Filtrer les débats</label>
+        <input class="field" type="search" id="history-filter" placeholder="Filtrer par question ou agent…" autocomplete="off">
+        <nav class="docket" id="history" aria-labelledby="history-title"></nav>
       </section>
     </div>
   </aside>
 
-  <main>
-    <!-- Saisine : nouveau débat -->
-    <section class="col saisine" id="saisine">
-      <h1>Soumettre une question au débat</h1>
+  <main id="main" tabindex="-1">
+    <!-- new debate -->
+    <section class="col" id="saisine">
+      <h1 class="page-title">Soumettre une question au débat</h1>
       <p class="lede">Le proposant défend une réponse, le critique l'attaque round après round, le juge rend le verdict. Chaque tour s'affiche dès qu'il est écrit (10 à 60 s par tour pour un vrai agent).</p>
-      <form class="sheet" id="form" autocomplete="off">
-        <label class="field-label" for="question">Question ou affirmation</label>
-        <textarea id="question" required maxlength="4000" placeholder="Ex. : « Un index B-tree est toujours plus rapide qu'un scan séquentiel »"></textarea>
-        <div class="examples" id="examples"></div>
+      <form class="card stack-5" id="form" autocomplete="off">
+        <div>
+          <label class="label" for="question">Question ou affirmation</label>
+          <textarea class="field" id="question" required maxlength="4000" aria-describedby="q-help" placeholder="Ex. : « Un index B-tree est toujours plus rapide qu'un scan séquentiel »"></textarea>
+          <div class="help" id="q-help"><kbd>Ctrl</kbd> + <kbd>Entrée</kbd> pour lancer.</div>
+        </div>
+        <div class="cluster examples" id="examples" role="group" aria-label="Exemples de questions"></div>
 
         <div class="parties">
-          <div class="party p"><label for="proposer"><i></i>Proposant</label><select id="proposer"></select><small>défend une réponse</small></div>
-          <button type="button" class="btn icon swap" id="swap" title="Inverser proposant et critique" aria-label="Inverser proposant et critique"><svg class="i"><use href="#i-swap"/></svg></button>
-          <div class="party c"><label for="critic"><i></i>Critique</label><select id="critic"></select><small>cherche les failles</small></div>
+          <div class="party p"><label class="label" for="proposer"><i class="swatch"></i>Proposant</label><select class="field" id="proposer"></select><div class="help">défend une réponse</div></div>
+          <button type="button" class="btn icon swap" id="swap" title="Inverser proposant et critique" aria-label="Inverser proposant et critique"><svg class="i" aria-hidden="true"><use href="#i-swap"/></svg></button>
+          <div class="party c"><label class="label" for="critic"><i class="swatch"></i>Critique</label><select class="field" id="critic"></select><div class="help">cherche les failles</div></div>
         </div>
         <div class="bench">
-          <div class="party j"><label for="judge"><i></i>Juge</label><select id="judge"></select><small>tranche à la fin</small></div>
+          <div class="party j"><label class="label" for="judge"><i class="swatch"></i>Juge</label><select class="field" id="judge"></select><div class="help">tranche à la fin</div></div>
           <fieldset class="rounds" id="rounds">
-            <legend>Rounds max</legend>
+            <legend class="label">Rounds max</legend>
             <div class="seg">
               <label><input type="radio" name="rounds" value="1"><span>1</span></label>
               <label><input type="radio" name="rounds" value="2"><span>2</span></label>
@@ -313,38 +366,44 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
               <label><input type="radio" name="rounds" value="4"><span>4</span></label>
               <label><input type="radio" name="rounds" value="5"><span>5</span></label>
             </div>
+            <div class="help">arrêt anticipé si le critique accepte</div>
           </fieldset>
         </div>
-        <div class="hint">Le débat s'arrête plus tôt si le critique accepte (VERDICT: ACCEPT).</div>
         <div class="launch">
+          <span class="help">Le débat est enregistré dans le projet sélectionné.</span>
           <button type="submit" class="btn primary" id="start">Lancer le débat</button>
         </div>
       </form>
     </section>
 
-    <!-- Dossier : débat en cours ou archivé -->
+    <!-- case file -->
     <section class="col" id="case" hidden>
-      <div class="sheet case-head">
+      <div class="card">
         <div class="case-meta">
           <span class="no" id="case-no"></span>
           <span id="case-project"></span>
           <span id="case-date"></span>
-          <span class="state" id="case-state"></span>
+          <span class="st" id="case-state"></span>
         </div>
         <h1 class="case-title" id="case-title"></h1>
-        <div class="versus" id="case-versus"></div>
+        <div class="versus cluster" id="case-versus"></div>
         <div class="register" id="scores">
           <div><b id="s-round">0</b><span>round</span></div>
           <div><b id="s-conf">–</b><span>confiance du proposant</span></div>
           <div><b id="s-obj">–</b><span>objections ouvertes</span></div>
         </div>
         <div class="progress" id="progress" aria-hidden="true"></div>
+        <div class="case-actions cluster">
+          <button type="button" class="btn" id="rerun"><svg class="i" aria-hidden="true"><use href="#i-redo"/></svg>Relancer / modifier</button>
+          <button type="button" class="btn ghost" id="copy"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg><span id="copy-label" aria-live="polite">Copier le débat</span></button>
+        </div>
       </div>
       <div class="verdict waiting" id="verdict" aria-live="polite">Verdict en attente : le juge statue après le dernier round.</div>
       <div class="record" id="timeline"></div>
     </section>
   </main>
 </div>
+<button type="button" class="btn primary follow" id="follow" hidden><svg class="i" aria-hidden="true"><use href="#i-down"/></svg>Suivre le tour en cours</button>
 
 <script>
 "use strict";
@@ -357,7 +416,11 @@ const EXAMPLES = [
   "Should a 5-person startup write its backend in Rust?",
   "Un test unitaire avec 100% de couverture garantit l'absence de bugs.",
 ];
+const NEAR_BOTTOM_PX = 240;      // autoscroll only if the reader is already near the end
+const COPY_FEEDBACK_MS = 2000;
+const MIN_ROUNDS = 1, MAX_ROUNDS = 5, DEFAULT_ROUNDS = 3;
 let live = false, source = null, steps = 0, stepsDone = 0, timerId = null, lastSitting = null, caseCfg = null;
+let transcript = [], historyList = [];
 
 // ---- safe mini-markdown: escape FIRST, then add a few formatting tags ----
 function esc(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -392,19 +455,21 @@ function renderMarkdown(src) {
 }
 
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
-function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("class", "i"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", "#i-" + name); s.append(u); return s; }
+function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", "#i-" + name); s.append(u); return s; }
 function fmtDate(epoch) { return epoch ? new Date(epoch * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : ""; }
+function nearBottom() { return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - NEAR_BOTTOM_PX; }
 
 // ---------- views ----------
 function showView(name) {
   $("saisine").hidden = name !== "form";
   $("case").hidden = name !== "case";
   $("new-debate").hidden = name !== "case";
+  if (name !== "case") $("follow").hidden = true;
 }
 
 function resetCase() {
   clearInterval(timerId);
-  $("timeline").replaceChildren(); lastSitting = null; stepsDone = 0; caseCfg = null;
+  $("timeline").replaceChildren(); lastSitting = null; stepsDone = 0; caseCfg = null; transcript = [];
   $("s-round").textContent = "0"; $("s-conf").textContent = "–"; $("s-obj").textContent = "–";
   const v = $("verdict"); v.className = "verdict waiting"; v.replaceChildren("Verdict en attente : le juge statue après le dernier round.");
   ["case-no", "case-project", "case-date", "case-state", "case-title"].forEach((id) => { $(id).textContent = ""; });
@@ -419,11 +484,11 @@ function setCaseHeader(id, cfg, createdAt) {
   $("case-date").textContent = fmtDate(createdAt);
   $("case-title").textContent = cfg.question;
   const vs = $("case-versus"); vs.replaceChildren();
-  vs.append(el("b", "p", cfg.proposer), el("em", null, "contre"), el("b", "c", cfg.critic), el("span", null, "· juge " + cfg.judge + " · " + cfg.max_rounds + " round(s) max"));
+  vs.append(el("b", "p", cfg.proposer), el("em", null, "contre"), el("b", "c", cfg.critic), el("span", null, "juge " + cfg.judge + " · " + cfg.max_rounds + " round(s) max"));
   document.title = cfg.question.slice(0, 60) + " · Adversarial Reasoning";
 }
 
-function setState(state) { const s = $("case-state"); s.textContent = STATE_LABEL[state] || state; s.className = "state st " + state; }
+function setState(state) { const s = $("case-state"); s.textContent = STATE_LABEL[state] || state; s.className = "st " + state; }
 
 // ---------- transcript ----------
 function chipsFor(role, st) {
@@ -437,8 +502,8 @@ function chipsFor(role, st) {
     const acc = (st.VERDICT || "").toUpperCase() === "ACCEPT";
     box.append(el("span", "chip " + (acc ? "ok" : "warn"), acc ? "ACCEPTE" : "CONTESTE"));
     if (st.OBJECTIONS) box.append(el("span", "chip", st.OBJECTIONS + " objection(s)"));
-  } else {
-    if (st.CONFIDENCE) box.append(el("span", "chip", "confiance " + st.CONFIDENCE + " %"));
+  } else if (st.CONFIDENCE) {
+    box.append(el("span", "chip", "confiance " + st.CONFIDENCE + " %"));
   }
   return box;
 }
@@ -456,19 +521,31 @@ function turnHead(role, agent) {
   return head;
 }
 
+// Live debates: follow the newest turn only if the reader was at the bottom before it arrived;
+// otherwise leave their scroll alone and offer the "follow" pill.
+function revealLatest(node, wasNearBottom) {
+  if (!live) return;
+  if (wasNearBottom) { node.scrollIntoView({ behavior: "smooth", block: "nearest" }); $("follow").hidden = true; }
+  else $("follow").hidden = false;
+}
+
 function addPending(ev) {
+  const wasNear = nearBottom();
   sitting(ev.role, ev.round);
   const card = el("article", "turn pending " + ev.role + (live ? " enter" : "")); card.id = "pending";
   card.append(turnHead(ev.role, ev.agent));
-  const body = el("div", "turn-body"); const w = el("div", "writing");
+  const body = el("div", "turn-body"); const w = el("div", "writing stack-2");
   w.append(el("i"), el("i"), el("i")); const t = el("span", null, "rédige… 0 s"); w.append(t); body.append(w); card.append(body);
-  $("timeline").append(card); card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  $("timeline").append(card);
+  revealLatest(card, wasNear);
   const t0 = Date.now(); clearInterval(timerId);
   timerId = setInterval(() => { t.textContent = "rédige… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
 }
 
 function addTurn(turn) {
+  const wasNear = nearBottom();
   clearInterval(timerId); const p = $("pending"); if (p) p.remove();
+  transcript.push(turn);
   sitting(turn.role, turn.round);
   const card = el("article", "turn " + turn.role + (live ? " enter" : ""));
   if (turn.role === "judge") card.id = "judgment";
@@ -477,15 +554,14 @@ function addTurn(turn) {
   head.append(chipsFor(turn.role, turn.status)); card.append(head);
   const body = el("div", "turn-body"); body.innerHTML = renderMarkdown(turn.content); // content escaped in renderMarkdown
   card.append(body); $("timeline").append(card);
-  if (turn.role !== "judge") card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  if (turn.role !== "judge") $("s-round").textContent = turn.round;
+  if (turn.role !== "judge") { revealLatest(card, wasNear); $("s-round").textContent = turn.round; }
   if (turn.role === "proposer" && turn.status?.CONFIDENCE) $("s-conf").textContent = turn.status.CONFIDENCE + " %";
   if (turn.role === "critic" && turn.status?.OBJECTIONS) $("s-obj").textContent = turn.status.OBJECTIONS;
   if (turn.role === "judge") renderVerdict(turn);
   stepsDone++; drawProgress(false);
 }
 
-// The verdict is the payoff: it is stamped at the top of the case, not buried at the bottom.
+// The verdict is the payoff: stamped at the top of the case, not buried at the bottom.
 function renderVerdict(turn) {
   const st = turn.status || {}; const winner = (st.WINNER || "").toLowerCase();
   const v = $("verdict"); v.className = "verdict"; v.replaceChildren();
@@ -500,18 +576,21 @@ function renderVerdict(turn) {
   read.addEventListener("click", () => $("judgment")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   v.append(stamp, facts, read);
   requestAnimationFrame(() => v.classList.add("landed"));
+  $("follow").hidden = true;
+  if (live) v.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function banner(cls, text) { $("timeline").append(el("div", "banner " + cls, text)); }
 
-function drawProgress(live) {
+function drawProgress(isLive) {
   const bar = $("progress"); bar.replaceChildren();
-  for (let i = 0; i < steps; i++) bar.append(el("span", i < stepsDone ? "done" : (live && i === stepsDone ? "live" : "")));
+  for (let i = 0; i < steps; i++) bar.append(el("span", i < stepsDone ? "done" : (isLive && i === stepsDone ? "live" : "")));
 }
 
 function setRunning(running) {
   for (const id of ["start", "swap", "question", "proposer", "critic", "judge", "rounds", "project", "new-project"]) $(id).disabled = running;
   $("start").textContent = running ? "Débat en cours…" : "Lancer le débat";
+  $("rerun").disabled = running;
 }
 
 function handle(ev) {
@@ -531,25 +610,29 @@ function handle(ev) {
   }
 }
 
-function finish() { if (source) { source.close(); source = null; } setRunning(false); loadHistory(); }
+function finish() { if (source) { source.close(); source = null; } live = false; $("follow").hidden = true; setRunning(false); loadHistory(); }
 
-function selectedRounds() { return Math.max(1, Math.min(5, parseInt(document.querySelector('input[name="rounds"]:checked')?.value, 10) || 3)); }
+function selectedRounds() {
+  const v = parseInt(document.querySelector('input[name="rounds"]:checked')?.value, 10) || DEFAULT_ROUNDS;
+  return Math.max(MIN_ROUNDS, Math.min(MAX_ROUNDS, v));
+}
 
 async function start(e) {
   e.preventDefault();
   const rounds = selectedRounds();
   const payload = { question: $("question").value.trim(), proposer: $("proposer").value, critic: $("critic").value, judge: $("judge").value, max_rounds: rounds, project: $("project").value };
-  if (!payload.question) return;
+  if (!payload.question) { $("question").focus(); return; }
   setRunning(true); live = true;
   resetCase(); setState("running");
   setCaseHeader("…", payload, Date.now() / 1000);
   steps = 1 + rounds * 2 + 1; drawProgress(false);
+  window.scrollTo({ top: 0 });
   let res;
   try {
     res = await fetch("/api/debates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  } catch (err) { banner("err", "Serveur injoignable : " + err.message); setRunning(false); return; }
+  } catch (err) { banner("err", "Serveur injoignable : " + err.message); live = false; setRunning(false); return; }
   const data = await res.json();
-  if (!res.ok) { banner("err", data.error || ("HTTP " + res.status)); setState("failed"); setRunning(false); return; }
+  if (!res.ok) { banner("err", data.error || ("HTTP " + res.status)); setState("failed"); live = false; setRunning(false); return; }
   history.replaceState(null, "", "#" + data.id);
   $("case-no").textContent = "Débat n° " + data.id;
   follow(data.id);
@@ -561,7 +644,7 @@ function follow(id) {
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.type === "debate_started") {
-      $("question").value = ev.config.question; steps = 1 + ev.config.max_rounds * 2 + 1;
+      steps = 1 + ev.config.max_rounds * 2 + 1;
       setCaseHeader(id, ev.config, ev.ts);
       if (ev.config.project && $("project").value !== ev.config.project) { $("project").value = ev.config.project; loadHistory(); }
     }
@@ -578,17 +661,49 @@ async function resumeFromHash() {
   const snap = await res.json();
   if (source) { source.close(); source = null; }
   markCurrent();
-  setRunning(snap.state === "running"); live = snap.state === "running";
+  live = snap.state === "running"; setRunning(live);
   resetCase(); setState(snap.state);
+  window.scrollTo({ top: 0 });
   follow(id);
 }
 
-function newDebate() {
+// "Relancer / modifier": back to the form, prefilled with the case's question, parties and rounds.
+function newDebate(prefill) {
   if (source) { source.close(); source = null; }
-  clearInterval(timerId); setRunning(false);
+  clearInterval(timerId); live = false; setRunning(false);
+  if (prefill) {
+    $("question").value = prefill.question;
+    for (const role of ["proposer", "critic", "judge"]) {
+      const usable = [...$(role).options].some((o) => o.value === prefill[role] && !o.disabled);
+      if (usable) $(role).value = prefill[role];
+    }
+    const r = document.querySelector(`input[name="rounds"][value="${Number(prefill.max_rounds)}"]`); if (r) r.checked = true;
+  }
   history.replaceState(null, "", location.pathname);
   document.title = "Adversarial Reasoning";
-  showView("form"); markCurrent(); $("question").focus();
+  showView("form"); markCurrent(); window.scrollTo({ top: 0 }); $("question").focus();
+}
+
+// Markdown export of the record. navigator.clipboard needs a secure context (HTTPS);
+// this server runs on plain HTTP, so fall back to a hidden textarea + execCommand.
+function transcriptMarkdown() {
+  const lines = ["# " + (caseCfg?.question || ""), ""];
+  if (caseCfg) lines.push(`${caseCfg.proposer} contre ${caseCfg.critic} · juge ${caseCfg.judge}`, "");
+  for (const t of transcript) lines.push(`## ${ROLE_LABEL[t.role] || t.role} (${t.agent}) · round ${t.round}`, "", t.content, "");
+  return lines.join("\n");
+}
+async function copyTranscript() {
+  const text = transcriptMarkdown(); const label = $("copy-label");
+  let ok = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (err) { console.warn("clipboard API refused", err); }
+  }
+  if (!ok) {
+    const ta = el("textarea"); ta.value = text; ta.setAttribute("readonly", ""); ta.className = "sr-only"; document.body.append(ta); ta.select();
+    ok = document.execCommand("copy"); ta.remove();
+  }
+  label.textContent = ok ? "Copié" : "Copie impossible";
+  setTimeout(() => { label.textContent = "Copier le débat"; }, COPY_FEEDBACK_MS);
 }
 
 async function loadBackends() {
@@ -598,7 +713,8 @@ async function loadBackends() {
   for (const role of ["proposer", "critic", "judge"]) {
     const sel = $(role);
     for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
-    sel.value = backends[defaults[role]]?.available ? defaults[role] : "mock";
+    const saved = localStorageGet("role-" + role);
+    sel.value = saved && backends[saved]?.available ? saved : backends[defaults[role]]?.available ? defaults[role] : "mock";
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
@@ -610,7 +726,10 @@ async function loadBackends() {
 // ---------- projects & docket ----------
 function markCurrent() {
   const id = location.hash.slice(1);
-  for (const a of $("history").querySelectorAll("a")) a.classList.toggle("current", a.dataset.id === id);
+  for (const a of $("history").querySelectorAll("a")) {
+    const cur = a.dataset.id === id; a.classList.toggle("current", cur);
+    if (cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
 }
 
 let projectsCache = [];
@@ -630,29 +749,42 @@ async function loadProjects(select) {
   await loadHistory();
 }
 
-async function loadHistory() {
-  const name = $("project").value; const box = $("history"); box.replaceChildren();
-  updateDocketSummary();
-  if (!name) return;
-  const res = await fetch("/api/projects/" + encodeURIComponent(name) + "/debates");
-  if (!res.ok) return;
-  const list = await res.json();
-  const cached = projectsCache.find((x) => x.name === name); if (cached) { cached.debates = list.length; updateDocketSummary(); }
+// Client-side filter: the docket is already loaded per project, so no extra request.
+function renderHistory() {
+  const box = $("history"); box.replaceChildren();
+  const q = $("history-filter").value.trim().toLowerCase();
+  const list = q ? historyList.filter((d) => [d.question, d.proposer, d.critic, d.judge].join(" ").toLowerCase().includes(q)) : historyList;
   for (const d of list) {
     const a = el("a"); a.href = "#" + d.id; a.dataset.id = d.id;
     a.append(el("span", "q", d.question));
-    const m = el("span", "m"); const t = el("time", null, fmtDate(d.created_at));
-    m.append(t, el("span", null, d.proposer + " c. " + d.critic), el("span", "st " + d.state, STATE_LABEL[d.state] || d.state));
+    const m = el("span", "m");
+    m.append(el("time", null, fmtDate(d.created_at)), el("span", null, d.proposer + " c. " + d.critic), el("span", "st " + d.state, STATE_LABEL[d.state] || d.state));
     a.append(m); box.append(a);
   }
-  if (!list.length) box.append(el("div", "docket-empty", "Aucun débat dans ce projet pour l'instant."));
+  if (!historyList.length) box.append(el("div", "docket-empty", "Aucun débat dans ce projet pour l'instant."));
+  else if (!list.length) box.append(el("div", "docket-empty", "Aucun débat ne correspond au filtre."));
   markCurrent();
 }
 
-function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
-function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } }
+async function loadHistory() {
+  const name = $("project").value;
+  updateDocketSummary();
+  if (!name) { historyList = []; renderHistory(); return; }
+  const res = await fetch("/api/projects/" + encodeURIComponent(name) + "/debates");
+  if (!res.ok) return;
+  historyList = await res.json();
+  const cached = projectsCache.find((x) => x.name === name); if (cached) { cached.debates = historyList.length; updateDocketSummary(); }
+  renderHistory();
+}
 
-$("project").addEventListener("change", () => { localStorageSet("project", $("project").value); loadHistory(); });
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode: preference simply not kept */ } }
+
+function closeDocket() { document.body.classList.remove("docket-open"); $("docket-toggle").setAttribute("aria-expanded", "false"); }
+
+$("project").addEventListener("change", () => { localStorageSet("project", $("project").value); $("history-filter").value = ""; loadHistory(); });
+$("history-filter").addEventListener("input", renderHistory);
+for (const role of ["proposer", "critic", "judge"]) $(role).addEventListener("change", () => localStorageSet("role-" + role, $(role).value));
 $("new-project").addEventListener("click", () => {
   const f = $("np-form"); f.hidden = !f.hidden; $("np-error").hidden = true;
   if (!f.hidden) $("np-name").focus();
@@ -674,12 +806,16 @@ $("docket-toggle").addEventListener("click", () => {
   const open = document.body.classList.toggle("docket-open");
   $("docket-toggle").setAttribute("aria-expanded", String(open));
 });
-$("history").addEventListener("click", (e) => {
-  if (e.target.closest("a")) { document.body.classList.remove("docket-open"); $("docket-toggle").setAttribute("aria-expanded", "false"); }
-});
-$("new-debate").addEventListener("click", newDebate);
+$("history").addEventListener("click", (e) => { if (e.target.closest("a")) closeDocket(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDocket(); });
+$("new-debate").addEventListener("click", () => newDebate(null));
+$("rerun").addEventListener("click", () => { if (caseCfg) newDebate(caseCfg); });
+$("copy").addEventListener("click", copyTranscript);
+$("follow").addEventListener("click", () => { const n = $("pending") || $("timeline").lastElementChild; n?.scrollIntoView({ behavior: "smooth", block: "nearest" }); $("follow").hidden = true; });
+window.addEventListener("scroll", () => { if (live && nearBottom()) $("follow").hidden = true; }, { passive: true });
 window.addEventListener("hashchange", resumeFromHash);
 
+$("question").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("form").requestSubmit(); } });
 $("swap").addEventListener("click", () => { const p = $("proposer").value; $("proposer").value = $("critic").value; $("critic").value = p; });
 $("form").addEventListener("submit", start);
 for (const ex of EXAMPLES) { const b = el("button", null, ex); b.type = "button"; b.addEventListener("click", () => { $("question").value = ex; $("question").focus(); }); $("examples").append(b); }
