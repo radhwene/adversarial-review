@@ -28,4 +28,4 @@ USER node
 
 EXPOSE 8765
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python3", "web/server.py", "--host", "0.0.0.0", "--port", "8765", "--projects-dir", "/data/lldebat"]
+CMD ["python3", "web/server.py", "--host", "0.0.0.0", "--port", "8765", "--projects-dir", "/data/lldebat", "--keys-dir", "/data/auth"]

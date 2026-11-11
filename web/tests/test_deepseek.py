@@ -4,14 +4,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backends import BackendError, BackendTimeout, DeepSeekBackend, TurnRequest  # noqa: E402
+from backends import (BackendError, BackendTimeout, DeepSeekBackend, TurnRequest,  # noqa: E402
+                      deepseek_key_store)
+
+KEY = "sk-test0123456789abcdefABCD"
 
 
 class FakeDeepSeek(BaseHTTPRequestHandler):
@@ -58,14 +63,22 @@ class DeepSeekBackendTests(unittest.TestCase):
 
     def setUp(self):
         FakeDeepSeek.mode, FakeDeepSeek.seen = "ok", []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("DEEPSEEK_API_KEY", None)
+        self.keys = deepseek_key_store(tmp.name)
+        self.keys.set(KEY)
 
     def backend(self, **kw):
-        return DeepSeekBackend(api_key="sk-test", url=self.url, **kw)
+        return DeepSeekBackend(self.keys, url=self.url, **kw)
 
     def test_sends_exact_request_and_returns_content(self):
         out = self.backend(model="deepseek-reasoner").complete(TurnRequest("critic", 1, "PROMPT"))
         self.assertEqual(out, "réponse")
-        self.assertEqual(FakeDeepSeek.seen, [("Bearer sk-test", {
+        self.assertEqual(FakeDeepSeek.seen, [("Bearer " + KEY, {
             "model": "deepseek-reasoner", "stream": False, "messages": [{"role": "user", "content": "PROMPT"}]})])
 
     def test_seat_model_overrides_default(self):
@@ -87,11 +100,16 @@ class DeepSeekBackendTests(unittest.TestCase):
         with self.assertRaises(BackendTimeout):
             self.backend(timeout=0.3).complete(TurnRequest("critic", 1, "p"))
 
-    def test_unavailable_without_key(self):
-        backend = DeepSeekBackend(api_key="")
+    def test_key_saved_or_removed_applies_to_the_same_instance(self):
+        backend = self.backend()
+        self.keys.clear()
         self.assertFalse(backend.available())
-        with self.assertRaisesRegex(BackendError, "DEEPSEEK_API_KEY"):
+        with self.assertRaisesRegex(BackendError, r"^deepseek: no API key"):
             backend.complete(TurnRequest("critic", 1, "p"))
+        self.assertEqual(FakeDeepSeek.seen, [])  # nothing sent without a key
+        self.keys.set(KEY)
+        self.assertTrue(backend.available())
+        self.assertEqual(backend.complete(TurnRequest("critic", 1, "p")), "réponse")
 
 
 if __name__ == "__main__":

@@ -15,9 +15,12 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import re
 import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+from api_keys import ApiKeyStore
 
 logger = logging.getLogger(__name__)
 
@@ -289,34 +292,37 @@ class MockBackend(Backend):
         )
 
 
-DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
+DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"  # fallback when no key was saved from the UI
+DEEPSEEK_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9]{20,128}")  # also keeps CR/LF out of the header
+DEFAULT_KEYS_DIR = os.path.join(os.path.expanduser("~"), ".adversarial-review", "keys")
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"  # OpenAI-compatible endpoint
 DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
 
 
 class DeepSeekBackend(Backend):
-    """DeepSeek over its HTTP API (stdlib urllib). Enabled when DEEPSEEK_API_KEY is set."""
+    """DeepSeek over its pay-per-use HTTP API (stdlib urllib). Enabled while its key store holds a key."""
 
     name = "deepseek"
     models = ("deepseek-chat", "deepseek-reasoner")
 
-    def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS,
-                 api_key: Optional[str] = None, url: str = DEEPSEEK_URL) -> None:
+    def __init__(self, keys: ApiKeyStore, model: Optional[str] = None,
+                 timeout: float = DEFAULT_TIMEOUT_SECONDS, url: str = DEEPSEEK_URL) -> None:
+        self.keys = keys
         self.model = model or DEEPSEEK_DEFAULT_MODEL
         self.timeout = timeout
         self.url = url
-        self._api_key = api_key if api_key is not None else os.environ.get(DEEPSEEK_API_KEY_ENV, "")
 
     def available(self) -> bool:
-        return bool(self._api_key)
+        return bool(self.keys.get())
 
     def complete(self, request: TurnRequest) -> str:
-        if not self._api_key:
-            raise BackendError(f"deepseek: {DEEPSEEK_API_KEY_ENV} is not set")
+        api_key = self.keys.get()  # read per turn: a key saved or removed in the UI applies at once
+        if not api_key:
+            raise BackendError("deepseek: no API key (Comptes LLM → DeepSeek)")
         body = json.dumps({"model": request.model or self.model, "stream": False,
                            "messages": [{"role": "user", "content": request.prompt}]}).encode()
         req = urllib.request.Request(self.url, data=body, method="POST", headers={
-            "Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"})
+            "Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -349,13 +355,18 @@ def _deepseek_error(exc: "urllib.error.HTTPError") -> str:
         return str(exc.reason)
 
 
+def deepseek_key_store(keys_dir: str = DEFAULT_KEYS_DIR) -> ApiKeyStore:
+    return ApiKeyStore(os.path.join(keys_dir, "deepseek"), DEEPSEEK_API_KEY_ENV, DEEPSEEK_KEY_PATTERN)
+
+
 def build_registry(codex_model: Optional[str] = None, claude_model: Optional[str] = None,
                    timeout: float = DEFAULT_TIMEOUT_SECONDS, mock_delay: float = 0.0,
-                   deepseek_model: Optional[str] = None, gemini_model: Optional[str] = None) -> Dict[str, Backend]:
+                   deepseek_model: Optional[str] = None, gemini_model: Optional[str] = None,
+                   deepseek_keys: Optional[ApiKeyStore] = None) -> Dict[str, Backend]:
     return {
         "claude": ClaudeBackend(model=claude_model, timeout=timeout),
         "codex": CodexBackend(model=codex_model, timeout=timeout),
-        "deepseek": DeepSeekBackend(model=deepseek_model, timeout=timeout),
+        "deepseek": DeepSeekBackend(deepseek_keys or deepseek_key_store(), model=deepseek_model, timeout=timeout),
         "gemini": GeminiBackend(model=gemini_model, timeout=timeout),
         "mock": MockBackend(delay=mock_delay),
     }

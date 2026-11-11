@@ -34,8 +34,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from api_keys import ApiKeyStore, InvalidApiKey  # noqa: E402
 from auth import AuthManager, InvalidAuthCode, NoLoginInProgress, UnknownProvider  # noqa: E402
-from backends import DEFAULT_TIMEOUT_SECONDS, Backend, build_registry  # noqa: E402
+from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
+                      deepseek_key_store)
 from engine import Debate, DebateConfig, DebateRunner, InvalidDebateConfig  # noqa: E402
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
                       ProjectStore, UnknownProject)
@@ -86,6 +88,7 @@ _EVENTS_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/events$")
 _DEBATE_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})$")
 _PROJECT_DEBATES_PATH = re.compile(r"^/api/projects/([^/]+)/debates$")
 _AUTH_ACTION_PATH = re.compile(r"^/api/auth/([a-z]+)/(login|code|logout|cancel)$")
+_KEY_ACTION_PATH = re.compile(r"^/api/keys/([a-z]+)/(save|clear)$")
 FORWARDED_PROTO_HEADER = "X-Forwarded-Proto"
 
 
@@ -144,9 +147,11 @@ class App:
                  max_active: int = MAX_ACTIVE_DEBATES, auth: Optional[BasicAuth] = None,
                  projects: Optional[ProjectStore] = None,
                  trusted_proxies: Tuple[IpNetwork, ...] = (),
-                 llm_auth: Optional[AuthManager] = None) -> None:
+                 llm_auth: Optional[AuthManager] = None,
+                 api_keys: Optional[Dict[str, ApiKeyStore]] = None) -> None:
         self.registry = registry
         self.llm_auth = llm_auth
+        self.api_keys = api_keys or {}  # provider -> key typed in the UI (pay-per-use APIs)
         self.auth = auth
         self.trusted_proxies = trusted_proxies
         self.projects = projects
@@ -302,6 +307,9 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if path == "/api/auth" and app.llm_auth is not None:
                 self._json(HTTPStatus.OK, app.llm_auth.overview())
                 return
+            if path == "/api/keys":
+                self._json(HTTPStatus.OK, {name: store.status() for name, store in app.api_keys.items()})
+                return
             if path == "/api/backends":
                 self._json(HTTPStatus.OK, {name: {"available": b.available(), "models": list(b.models),
                                                    "efforts": list(b.efforts)} for name, b in app.registry.items()})
@@ -360,6 +368,10 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if m and app.llm_auth is not None:
                 self._auth_action(m.group(1), m.group(2))
                 return
+            m = _KEY_ACTION_PATH.match(self.path)
+            if m:
+                self._key_action(m.group(1), m.group(2))
+                return
             if self.path != "/api/debates":
                 self._error(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -396,6 +408,30 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             logger.info("debate=%s started project=%s proposer=%s critic=%s judge=%s rounds=%d", debate.id,
                         config.project, config.proposer, config.critic, config.judge, config.max_rounds)
             self._json(HTTPStatus.ACCEPTED, {"id": debate.id})
+
+        def _key_action(self, provider: str, action: str) -> None:
+            """Save or delete an API key. The value never reaches a log line or a response body."""
+            store = app.api_keys.get(provider)
+            if store is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown provider")
+                return
+            if not self._secure_transport():
+                self._error(HTTPStatus.FORBIDDEN, "API keys may only be sent over HTTPS")
+                return
+            body = self._read_json_body()
+            if body is None:
+                return
+            if action == "clear":
+                self._json(HTTPStatus.OK, store.clear())
+                return
+            key = body.get("key")
+            if not isinstance(key, str):
+                self._error(HTTPStatus.BAD_REQUEST, "key must be a string")
+                return
+            try:
+                self._json(HTTPStatus.OK, store.set(key))
+            except InvalidApiKey as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
 
         def _auth_action(self, provider: str, action: str) -> None:
             if not self._secure_transport():
@@ -488,7 +524,9 @@ def main(argv=None) -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--claude-model", default=None)
     parser.add_argument("--codex-model", default=None, help="model for codex exec -m (account-dependent)")
-    parser.add_argument("--deepseek-model", default=None, help="DeepSeek model (default deepseek-chat); needs DEEPSEEK_API_KEY")
+    parser.add_argument("--deepseek-model", default=None, help="DeepSeek model (default deepseek-chat); key from the UI or DEEPSEEK_API_KEY")
+    parser.add_argument("--keys-dir", default=DEFAULT_KEYS_DIR,
+                        help="where API keys typed in the UI are stored (one 0600 file per provider)")
     parser.add_argument("--gemini-model", default=None, help="Gemini model alias or id (default: the CLI's own); Login with Google")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per agent turn")
     parser.add_argument("--mock-delay", type=float, default=0.8, help="simulated latency of the mock backend")
@@ -513,13 +551,15 @@ def main(argv=None) -> None:
         trusted_proxies = parse_trusted_proxies(args.trusted_proxy)
     except ValueError as exc:
         parser.error(f"--trusted-proxy: {exc}")
+    deepseek_keys = deepseek_key_store(args.keys_dir)
     registry = build_registry(codex_model=args.codex_model, claude_model=args.claude_model,
                               timeout=args.timeout, mock_delay=args.mock_delay,
-                              deepseek_model=args.deepseek_model, gemini_model=args.gemini_model)
+                              deepseek_model=args.deepseek_model, gemini_model=args.gemini_model,
+                              deepseek_keys=deepseek_keys)
     projects = ProjectStore(args.projects_dir)
     projects.create(DEFAULT_PROJECT)
     server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies,
-                             llm_auth=AuthManager()),
+                             llm_auth=AuthManager(), api_keys={"deepseek": deepseek_keys}),
                          args.host, args.port)
     logger.info("projects: %s", projects.root)
     logger.info("auth: %s", "HTTP Basic enabled" if auth else "disabled (loopback only)")

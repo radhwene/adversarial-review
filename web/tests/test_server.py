@@ -375,5 +375,80 @@ class BasicAuthConfigTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
 
+class ApiKeyRouteTests(unittest.TestCase):
+    """/api/keys: HTTPS gate, real 0600 store, the key never comes back in a body or a log line."""
+
+    KEY = "sk-0123456789abcdefABCDEFwxyz"
+
+    def setUp(self):
+        from backends import DeepSeekBackend, deepseek_key_store
+        from server import parse_trusted_proxies
+        self.runs = tempfile.TemporaryDirectory()
+        self.keys_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.keys_dir.cleanup)
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("DEEPSEEK_API_KEY", None)
+        self.store = deepseek_key_store(self.keys_dir.name)
+        self.app = App({"mock": MockBackend(), "deepseek": DeepSeekBackend(self.store)}, self.runs.name,
+                       trusted_proxies=parse_trusted_proxies(["127.0.0.1/32"]), api_keys={"deepseek": self.store})
+        self.server = make_server(self.app, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    tearDown = ServerTests.tearDown
+    HTTPS = LlmAuthRouteTests.HTTPS
+
+    def request(self, method, path, body=None, headers=None):
+        resp, raw = ServerTests.request(self, method, path, body, headers)
+        return resp, raw.decode()
+
+    def backends(self):
+        return json.loads(self.request("GET", "/api/backends")[1])
+
+    def test_save_status_clear_round_trip_without_leaking_the_key(self):
+        with self.assertLogs("advr.server", "INFO") as server_logs, self.assertLogs("api_keys", "INFO") as key_logs:
+            resp, raw = self.request("POST", "/api/keys/deepseek/save", {"key": " " + self.KEY + "\n"},
+                                     headers=self.HTTPS)
+            self.assertEqual((resp.status, json.loads(raw)), (200, {"configured": True, "source": "file",
+                                                                    "hint": "…wxyz"}))
+            self.assertTrue(self.backends()["deepseek"]["available"])
+            resp, status_raw = self.request("GET", "/api/keys")
+            self.assertEqual(json.loads(status_raw), {"deepseek": {"configured": True, "source": "file",
+                                                                   "hint": "…wxyz"}})
+            resp, raw = self.request("POST", "/api/keys/deepseek/clear", {}, headers=self.HTTPS)
+            self.assertEqual((resp.status, json.loads(raw)["configured"]), (200, False))
+        self.assertFalse(self.backends()["deepseek"]["available"])
+        for line in server_logs.output + key_logs.output:
+            self.assertNotIn(self.KEY, line)
+        self.assertNotIn(self.KEY, status_raw)
+
+    def test_refused_without_https(self):
+        for headers in ({}, {"X-Forwarded-Proto": "http"}):
+            for action, body in (("save", {"key": self.KEY}), ("clear", {})):
+                resp, raw = self.request("POST", f"/api/keys/deepseek/{action}", body, headers=headers)
+                self.assertEqual(resp.status, 403, (headers, action, raw))
+                self.assertNotIn(self.KEY, raw)
+        self.assertEqual(self.store.get(), "")
+
+    def test_invalid_key_is_400_and_not_echoed(self):
+        bad = "sk-not a key; X-Header: 1"
+        resp, raw = self.request("POST", "/api/keys/deepseek/save", {"key": bad}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 400, raw)
+        self.assertNotIn("not a key", raw)
+        resp, raw = self.request("POST", "/api/keys/deepseek/save", {"key": 12345}, headers=self.HTTPS)
+        self.assertEqual((resp.status, json.loads(raw)), (400, {"error": "key must be a string"}))
+        self.assertEqual(self.store.get(), "")
+
+    def test_unknown_provider_and_form_post(self):
+        resp, _ = self.request("POST", "/api/keys/claude/save", {"key": self.KEY}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 404)
+        resp, _ = self.request("POST", "/api/keys/deepseek/save", {"key": self.KEY},
+                               headers={**self.HTTPS, "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(resp.status, 415)
+        self.assertEqual(self.store.get(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
