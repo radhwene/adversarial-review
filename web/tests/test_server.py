@@ -212,6 +212,59 @@ class AuthServerTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/", headers=self.basic(self.USER, self.PASSWORD))[0].status, 200)
 
 
+class ClientIpTests(unittest.TestCase):
+    def setUp(self):
+        from server import client_ip, parse_trusted_proxies
+        self.client_ip = client_ip
+        self.trusted = parse_trusted_proxies(["10.203.65.0/28"])
+
+    def test_untrusted_peer_cannot_spoof_forwarded_for(self):
+        self.assertEqual(self.client_ip("203.0.113.9", "198.51.100.1", self.trusted), "203.0.113.9")
+        self.assertEqual(self.client_ip("203.0.113.9", "198.51.100.1", ()), "203.0.113.9")
+
+    def test_trusted_proxy_uses_rightmost_entry(self):
+        # left part is whatever the client sent; the proxy appends the real peer last
+        self.assertEqual(self.client_ip("10.203.65.1", "6.6.6.6, 198.51.100.7", self.trusted), "198.51.100.7")
+
+    def test_malformed_or_missing_header_falls_back_to_peer(self):
+        for header in (None, "", "not-an-ip", "1.2.3.4, ", "1.2.3.4,::zz"):
+            with self.subTest(header=header):
+                self.assertEqual(self.client_ip("10.203.65.1", header, self.trusted), "10.203.65.1")
+
+    def test_parse_rejects_garbage(self):
+        from server import parse_trusted_proxies
+        with self.assertRaises(ValueError):
+            parse_trusted_proxies(["10.0.0.0/33"])
+
+
+class ProxiedAuthServerTests(unittest.TestCase):
+    """Behind a trusted proxy, one client's failures must not lock out another client."""
+
+    USER, PASSWORD = AuthServerTests.USER, AuthServerTests.PASSWORD
+
+    def setUp(self):
+        from server import BasicAuth, parse_trusted_proxies
+        self.runs = tempfile.TemporaryDirectory()
+        self.app = App({"mock": MockBackend()}, self.runs.name,
+                       auth=BasicAuth(self.USER, self.PASSWORD, max_failures=3, lockout_seconds=60),
+                       trusted_proxies=parse_trusted_proxies(["127.0.0.1/32"]))
+        self.server = make_server(self.app, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    tearDown = ServerTests.tearDown
+    request = ServerTests.request
+    basic = staticmethod(AuthServerTests.basic)
+
+    def test_scanner_lockout_is_per_forwarded_client(self):
+        scanner = {**self.basic(self.USER, "wrong"), "X-Forwarded-For": "203.0.113.66"}
+        for _ in range(3):
+            self.assertEqual(self.request("GET", "/", headers=scanner)[0].status, 401)
+        self.assertEqual(self.request("GET", "/", headers=scanner)[0].status, 429)
+        me = {**self.basic(self.USER, self.PASSWORD), "X-Forwarded-For": "198.51.100.7"}
+        self.assertEqual(self.request("GET", "/", headers=me)[0].status, 200)
+
+
 class BasicAuthConfigTests(unittest.TestCase):
     def test_rejects_short_password_and_empty_user(self):
         from server import BasicAuth

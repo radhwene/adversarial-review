@@ -13,7 +13,9 @@ services:
       ADVR_USER: ${ADVR_USER:?set ADVR_USER in web/.env}
       ADVR_PASSWORD: ${ADVR_PASSWORD:?set ADVR_PASSWORD in web/.env}
     command: ["python3", "web/server.py", "--host", "0.0.0.0", "--port", "8765",
-              "--projects-dir", "/data/lldebat", "--codex-model", "${CODEX_MODEL:-codex-auto-review}"]
+              "--projects-dir", "/data/lldebat", "--codex-model", "${CODEX_MODEL:-codex-auto-review}",
+              # host-side clients (the lab Caddy) reach us through the bridge gateway
+              "--trusted-proxy", "10.203.65.1/32"]
     volumes:
       - llm-auth:/data/auth          # claude/codex logins + DeepSeek key, survive rebuilds
       - ${LLDEBAT_DIR:-~/lldebat}:/data/lldebat
@@ -23,6 +25,13 @@ services:
       - /home/node
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.203.65.0/28   # pinned so the gateway (trusted proxy) address is stable
+          gateway: 10.203.65.1
 
 volumes:
   llm-auth:

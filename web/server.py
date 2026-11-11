@@ -20,6 +20,7 @@ import argparse
 import base64
 import binascii
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,6 +53,33 @@ AUTH_PASSWORD_ENV = "ADVR_PASSWORD"
 MIN_PASSWORD_CHARS = 12
 AUTH_MAX_FAILURES = 10
 AUTH_LOCKOUT_SECONDS = 300
+FORWARDED_FOR_HEADER = "X-Forwarded-For"
+
+IpNetwork = ipaddress._BaseNetwork  # IPv4Network | IPv6Network
+
+
+def parse_trusted_proxies(cidrs: Sequence[str]) -> Tuple[IpNetwork, ...]:
+    """CIDRs whose requests may name the real client in X-Forwarded-For. Raises ValueError."""
+    return tuple(ipaddress.ip_network(c, strict=False) for c in cidrs)
+
+
+def client_ip(peer: str, forwarded_for: Optional[str], trusted: Tuple[IpNetwork, ...]) -> str:
+    """Address the lockout and the logs are keyed on.
+
+    X-Forwarded-For is client-controlled: believed only when the TCP peer is a declared proxy, and
+    then only its right-most entry (the one that proxy appended). Anything unparsable falls back to
+    the peer, so a malformed header can never mint a fresh lockout bucket per request."""
+    try:
+        peer_addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    if not forwarded_for or not any(peer_addr in net for net in trusted):
+        return peer
+    last = forwarded_for.split(",")[-1].strip()
+    try:
+        return str(ipaddress.ip_address(last))
+    except ValueError:
+        return peer
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _EVENTS_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/events$")
 _DEBATE_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})$")
@@ -111,9 +139,11 @@ class App:
 
     def __init__(self, registry: Dict[str, Backend], runs_dir: Optional[str],
                  max_active: int = MAX_ACTIVE_DEBATES, auth: Optional[BasicAuth] = None,
-                 projects: Optional[ProjectStore] = None) -> None:
+                 projects: Optional[ProjectStore] = None,
+                 trusted_proxies: Tuple[IpNetwork, ...] = ()) -> None:
         self.registry = registry
         self.auth = auth
+        self.trusted_proxies = trusted_proxies
         self.projects = projects
         self.runner = DebateRunner(registry, runs_dir)
         self.debates: Dict[str, Debate] = {}
@@ -179,7 +209,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             """Auth first (when configured), else the loopback Host allowlist."""
             if app.auth is None:
                 return self._host_allowed()
-            ip = self.client_address[0]
+            ip = self._client_ip()
             if app.auth.locked_out(ip):
                 logger.warning("auth lockout active for %s", ip)
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, "too many failed logins, retry later")
@@ -205,8 +235,13 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             self._error(HTTPStatus.FORBIDDEN, "host not allowed")
             return False
 
+        def _client_ip(self) -> str:
+            return client_ip(self.client_address[0], self.headers.get(FORWARDED_FOR_HEADER),
+                             app.trusted_proxies)
+
         def log_message(self, fmt, *args):  # route http.server logs to logging
-            logger.info("%s %s", self.address_string(), fmt % args)
+            ip = self._client_ip() if getattr(self, "headers", None) is not None else self.address_string()
+            logger.info("%s %s", ip, fmt % args)
 
         # -- helpers ---------------------------------------------------------
         def _json(self, status: int, payload) -> None:
@@ -384,6 +419,8 @@ def main(argv=None) -> None:
     parser.add_argument("--deepseek-model", default=None, help="DeepSeek model (default deepseek-chat); needs DEEPSEEK_API_KEY")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per agent turn")
     parser.add_argument("--mock-delay", type=float, default=0.8, help="simulated latency of the mock backend")
+    parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
+                        help="reverse proxy allowed to set X-Forwarded-For (repeatable), e.g. the docker gateway")
     parser.add_argument("--projects-dir", default=DEFAULT_PROJECTS_ROOT,
                         help="one sub-folder per project, each with trace-debat.csv + debates/")
     args = parser.parse_args(argv)
@@ -399,14 +436,20 @@ def main(argv=None) -> None:
         logger.warning("Exposed on %s over plain HTTP: the password crosses the network base64-encoded "
                        "(readable by anyone on the path). Prefer an SSH tunnel or an HTTPS reverse proxy.",
                        args.host)
+    try:
+        trusted_proxies = parse_trusted_proxies(args.trusted_proxy)
+    except ValueError as exc:
+        parser.error(f"--trusted-proxy: {exc}")
     registry = build_registry(codex_model=args.codex_model, claude_model=args.claude_model,
                               timeout=args.timeout, mock_delay=args.mock_delay,
                               deepseek_model=args.deepseek_model)
     projects = ProjectStore(args.projects_dir)
     projects.create(DEFAULT_PROJECT)
-    server = make_server(App(registry, None, auth=auth, projects=projects), args.host, args.port)
+    server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies),
+                         args.host, args.port)
     logger.info("projects: %s", projects.root)
     logger.info("auth: %s", "HTTP Basic enabled" if auth else "disabled (loopback only)")
+    logger.info("trusted proxies: %s", ", ".join(map(str, trusted_proxies)) or "none")
     logger.info("Serving on http://%s:%d", args.host, server.server_address[1])
     try:
         server.serve_forever()
