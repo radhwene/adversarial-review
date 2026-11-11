@@ -1,0 +1,5 @@
+runs/
+tests/
+__pycache__/
+*.pyc
+.env

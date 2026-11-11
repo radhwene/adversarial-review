@@ -27,6 +27,21 @@ DEEPSEEK_API_KEY=sk-... python3 web/server.py --deepseek-model deepseek-reasoner
 python3 web/server.py --projects-dir /data/lldebat
 ```
 
+## Run in Docker (recommended)
+
+```bash
+cd web
+printf 'ADVR_USER=...\nADVR_PASSWORD=...\n' > .env && chmod 600 .env   # gitignored
+chown -R 1000:1000 ~/lldebat        # the container runs as uid 1000 (user "node")
+docker compose up -d --build
+```
+
+- Listens on `127.0.0.1:8765` only; TLS and the public port belong to the reverse proxy in front.
+- Volume `llm-auth` (`/data/auth`) keeps the claude login (`CLAUDE_CONFIG_DIR`), the codex login
+  (`CODEX_HOME`) and the DeepSeek key across rebuilds. The image itself holds no credential.
+- `~/lldebat` is bind-mounted on `/data/lldebat`.
+- Root filesystem read-only, all capabilities dropped, `no-new-privileges`.
+
 ## Projects and the trace-debat.csv trace
 
 Each project is a sub-folder of `~/lldebat/` (or `--projects-dir`), created from the UI's "+" button (name: letters, digits, `-`, `_`; max 64).

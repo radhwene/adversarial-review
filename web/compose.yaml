@@ -1,0 +1,28 @@
+# docker compose -f web/compose.yaml up -d --build
+# Listens on loopback only: TLS and the public port are the lab Caddy's job.
+name: lldebat
+
+services:
+  debat:
+    build: .
+    image: lldebat:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      ADVR_USER: ${ADVR_USER:?set ADVR_USER in web/.env}
+      ADVR_PASSWORD: ${ADVR_PASSWORD:?set ADVR_PASSWORD in web/.env}
+    command: ["python3", "web/server.py", "--host", "0.0.0.0", "--port", "8765",
+              "--projects-dir", "/data/lldebat", "--codex-model", "${CODEX_MODEL:-codex-auto-review}"]
+    volumes:
+      - llm-auth:/data/auth          # claude/codex logins + DeepSeek key, survive rebuilds
+      - ${LLDEBAT_DIR:-~/lldebat}:/data/lldebat
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  llm-auth:

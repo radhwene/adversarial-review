@@ -26,3 +26,6 @@ __pycache__/
 
 # impeccable review screenshots
 .impeccable/
+
+# Server credentials for docker compose (never commit)
+web/.env
