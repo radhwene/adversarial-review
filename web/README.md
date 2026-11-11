@@ -74,6 +74,21 @@ Rail section **Comptes LLM**: one card per CLI with its status (Connecté / Non 
 - Only `https://` links whose host is `claude.com`/`claude.ai` or `auth.openai.com` are shown, so a CLI line pointing elsewhere is never offered as a link.
 - Logins land in the `llm-auth` volume and survive rebuilds.
 
+## Model and reasoning effort per seat
+
+Under each party's agent select, two small selects: **modèle** and **effort de réflexion**. "par défaut" leaves the CLI's own choice.
+
+| Agent | Models | Efforts | Passed as |
+|---|---|---|---|
+| claude | fable, opus, sonnet, haiku | low, medium, high, xhigh, max | `--model X --effort Y` |
+| codex | none (the ChatGPT account only accepts `codex-auto-review`) | low, medium, high | `-c model_reasoning_effort=Y` |
+| deepseek | deepseek-chat, deepseek-reasoner | none | `"model"` in the API body |
+
+- API: `POST /api/debates` takes `options: {"proposer": {"model": "opus", "effort": "high"}, ...}`. `GET /api/backends` lists `models` and `efforts` per agent.
+- Allowlist only: an unknown seat, key or value gets a 400 before any CLI runs, so a value never reaches an argv unchecked.
+- The choice is stored per seat and agent in the browser, shown in the case header, and kept in the debate JSON. "Relancer" reuses it.
+- Verified 2026-11-11 over HTTPS: two debates, claude(haiku, low) / codex(low) / claude(sonnet, medium), 31 s and 34 s, critic ACCEPT, verdict. The logs show the flags on every turn.
+
 ## Projects and the trace-debat.csv trace
 
 Each project is a sub-folder of `~/lldebat/` (or `--projects-dir`), created from the UI's "+" button (name: letters, digits, `-`, `_`; max 64).
@@ -129,7 +144,7 @@ No dependencies beyond Python ≥ 3.9 and the agent CLIs you want to use
 cd web && python3 -m unittest discover -s tests -v
 ```
 
-- `test_engine.py`: status-block parsing, exact turn order, exact prompt contents per turn, early convergence, missing block, typed backend errors and timeouts, exact CLI argv, codex JSONL error extraction.
+- `test_engine.py`: seat options (allowlist errors, exact argv with `--model`/`--effort`/`model_reasoning_effort`, options reaching each turn, old snapshots without options), status-block parsing, exact turn order, exact prompt contents per turn, early convergence, missing block, typed backend errors and timeouts, exact CLI argv, codex JSONL error extraction.
 - `test_projects.py`: project name validation, trace-debat.csv append-only writes, debate JSON persistence and listing.
 - `test_deepseek.py`: DeepSeek backend against a local fake API server (exact request, HTTP error message, malformed response, timeout, missing key).
 - `test_auth.py`: `AuthManager` against fake claude/codex scripts run as real subprocesses: exact code piped to stdin, lookalike URLs skipped, a wrong code redacted from errors, invalid codes rejected before the CLI, ANSI-wrapped device code, session reuse, expiry kills the CLI, cancel, status parsers (subscription vs API billing).

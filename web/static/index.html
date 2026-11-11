@@ -177,6 +177,9 @@ main:focus { outline: none; }
   color: var(--encre-2); font-size: var(--fs-sm); text-align: left; cursor: pointer; transition: border-color var(--t-fast), color var(--t-fast); }
 .examples button:hover { border-color: var(--encre-3); color: var(--encre); }
 .parties { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-3); align-items: center; padding-top: var(--space-5); border-top: 1px solid var(--filet); }
+.tune { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--space-2); margin-top: var(--space-2); }
+.tune[hidden] { display: none; }
+.tune .field { font-size: var(--fs-sm); }
 .party.p { --c: var(--prop); } .party.c { --c: var(--crit); } .party.j { --c: var(--juge); }
 .bench { display: grid; grid-template-columns: 1fr auto; gap: var(--space-4) var(--space-6); align-items: start; }
 fieldset.rounds { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -371,12 +374,12 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         <div class="cluster examples" id="examples" role="group" aria-label="Exemples de questions"></div>
 
         <div class="parties">
-          <div class="party p"><label class="label" for="proposer"><i class="swatch"></i>Proposant</label><select class="field" id="proposer"></select><div class="help">défend une réponse</div></div>
+          <div class="party p"><label class="label" for="proposer"><i class="swatch"></i>Proposant</label><select class="field" id="proposer"></select><div class="tune" id="proposer-tune" hidden><select class="field" id="proposer-model" aria-label="Modèle du proposant" title="Modèle"></select><select class="field" id="proposer-effort" aria-label="Effort de réflexion du proposant" title="Effort de réflexion"></select></div><div class="help">défend une réponse</div></div>
           <button type="button" class="btn icon swap" id="swap" title="Inverser proposant et critique" aria-label="Inverser proposant et critique"><svg class="i" aria-hidden="true"><use href="#i-swap"/></svg></button>
-          <div class="party c"><label class="label" for="critic"><i class="swatch"></i>Critique</label><select class="field" id="critic"></select><div class="help">cherche les failles</div></div>
+          <div class="party c"><label class="label" for="critic"><i class="swatch"></i>Critique</label><select class="field" id="critic"></select><div class="tune" id="critic-tune" hidden><select class="field" id="critic-model" aria-label="Modèle du critique" title="Modèle"></select><select class="field" id="critic-effort" aria-label="Effort de réflexion du critique" title="Effort de réflexion"></select></div><div class="help">cherche les failles</div></div>
         </div>
         <div class="bench">
-          <div class="party j"><label class="label" for="judge"><i class="swatch"></i>Juge</label><select class="field" id="judge"></select><div class="help">tranche à la fin</div></div>
+          <div class="party j"><label class="label" for="judge"><i class="swatch"></i>Juge</label><select class="field" id="judge"></select><div class="tune" id="judge-tune" hidden><select class="field" id="judge-model" aria-label="Modèle du juge" title="Modèle"></select><select class="field" id="judge-effort" aria-label="Effort de réflexion du juge" title="Effort de réflexion"></select></div><div class="help">tranche à la fin</div></div>
           <fieldset class="rounds" id="rounds">
             <legend class="label">Rounds max</legend>
             <div class="seg">
@@ -504,7 +507,8 @@ function setCaseHeader(id, cfg, createdAt) {
   $("case-date").textContent = fmtDate(createdAt);
   $("case-title").textContent = cfg.question;
   const vs = $("case-versus"); vs.replaceChildren();
-  vs.append(el("b", "p", cfg.proposer), el("em", null, "contre"), el("b", "c", cfg.critic), el("span", null, "juge " + cfg.judge + " · " + cfg.max_rounds + " round(s) max"));
+  const tag = (role) => { const o = cfg.options?.[role] || {}; const t = [o.model, o.effort].filter(Boolean).join(" · "); return cfg[role] + (t ? " (" + t + ")" : ""); };
+  vs.append(el("b", "p", tag("proposer")), el("em", null, "contre"), el("b", "c", tag("critic")), el("span", null, "juge " + tag("judge") + " · " + cfg.max_rounds + " round(s) max"));
   document.title = cfg.question.slice(0, 60) + " · Adversarial Reasoning";
 }
 
@@ -609,6 +613,7 @@ function drawProgress(isLive) {
 
 function setRunning(running) {
   for (const id of ["start", "swap", "question", "proposer", "critic", "judge", "rounds", "project", "new-project"]) $(id).disabled = running;
+  for (const role of SEATS) for (const key of TUNE_KEYS) $(role + "-" + key).disabled = running;
   $("start").textContent = running ? "Débat en cours…" : "Lancer le débat";
   $("rerun").disabled = running;
 }
@@ -640,7 +645,9 @@ function selectedRounds() {
 async function start(e) {
   e.preventDefault();
   const rounds = selectedRounds();
-  const payload = { question: $("question").value.trim(), proposer: $("proposer").value, critic: $("critic").value, judge: $("judge").value, max_rounds: rounds, project: $("project").value };
+  const options = {};
+  for (const role of SEATS) { const o = seatOptions(role); if (Object.keys(o).length) options[role] = o; }
+  const payload = { question: $("question").value.trim(), proposer: $("proposer").value, critic: $("critic").value, judge: $("judge").value, max_rounds: rounds, project: $("project").value, options };
   if (!payload.question) { $("question").focus(); return; }
   setRunning(true); live = true;
   resetCase(); setState("running");
@@ -696,6 +703,7 @@ function newDebate(prefill) {
     for (const role of ["proposer", "critic", "judge"]) {
       const usable = [...$(role).options].some((o) => o.value === prefill[role] && !o.disabled);
       if (usable) $(role).value = prefill[role];
+      fillTune(role, usable ? (prefill.options?.[role] || {}) : undefined);
     }
     const r = document.querySelector(`input[name="rounds"][value="${Number(prefill.max_rounds)}"]`); if (r) r.checked = true;
   }
@@ -726,8 +734,34 @@ async function copyTranscript() {
   setTimeout(() => { label.textContent = "Copier le débat"; }, COPY_FEEDBACK_MS);
 }
 
+const SEATS = ["proposer", "critic", "judge"];
+const TUNE_KEYS = ["model", "effort"];
+const TUNE_DEFAULT = { model: "modèle par défaut", effort: "effort par défaut" };
+let backends = {};
+
+// Fills a seat's model/effort selects from what its agent offers; hides the row when it offers nothing.
+function fillTune(role, keep) {
+  const offer = backends[$(role).value] || {};
+  let any = false;
+  for (const key of TUNE_KEYS) {
+    const sel = $(role + "-" + key), values = offer[key === "model" ? "models" : "efforts"] || [];
+    sel.replaceChildren(el("option", null, TUNE_DEFAULT[key])); sel.options[0].value = "";
+    for (const v of values) { const o = el("option", null, v); o.value = v; sel.append(o); }
+    sel.hidden = values.length === 0; any = any || values.length > 0;
+    const want = keep ? (keep[key] ?? "") : (localStorageGet(`tune-${role}-${$(role).value}-${key}`) ?? "");
+    sel.value = values.includes(want) ? want : "";
+  }
+  $(role + "-tune").hidden = !any;
+}
+
+function seatOptions(role) {
+  const out = {};
+  for (const key of TUNE_KEYS) { const v = $(role + "-" + key).value; if (v) out[key] = v; }
+  return out;
+}
+
 async function loadBackends() {
-  const res = await fetch("/api/backends"); const backends = await res.json();
+  const res = await fetch("/api/backends"); backends = await res.json();
   const names = Object.keys(backends);
   const defaults = { proposer: "claude", critic: "claude", judge: "claude" };
   for (const role of ["proposer", "critic", "judge"]) {
@@ -735,6 +769,7 @@ async function loadBackends() {
     for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
     const saved = localStorageGet("role-" + role);
     sel.value = saved && backends[saved]?.available ? saved : backends[defaults[role]]?.available ? defaults[role] : "mock";
+    fillTune(role);
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
@@ -885,7 +920,10 @@ function closeDocket() { document.body.classList.remove("docket-open"); $("docke
 
 $("project").addEventListener("change", () => { localStorageSet("project", $("project").value); $("history-filter").value = ""; loadHistory(); });
 $("history-filter").addEventListener("input", renderHistory);
-for (const role of ["proposer", "critic", "judge"]) $(role).addEventListener("change", () => localStorageSet("role-" + role, $(role).value));
+for (const role of SEATS) {
+  $(role).addEventListener("change", () => { localStorageSet("role-" + role, $(role).value); fillTune(role); });
+  for (const key of TUNE_KEYS) $(role + "-" + key).addEventListener("change", (e) => localStorageSet(`tune-${role}-${$(role).value}-${key}`, e.target.value));
+}
 $("new-project").addEventListener("click", () => {
   const f = $("np-form"); f.hidden = !f.hidden; $("np-error").hidden = true;
   if (!f.hidden) $("np-name").focus();
@@ -917,7 +955,11 @@ window.addEventListener("scroll", () => { if (live && nearBottom()) $("follow").
 window.addEventListener("hashchange", resumeFromHash);
 
 $("question").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("form").requestSubmit(); } });
-$("swap").addEventListener("click", () => { const p = $("proposer").value; $("proposer").value = $("critic").value; $("critic").value = p; });
+$("swap").addEventListener("click", () => {
+  const p = $("proposer").value, po = seatOptions("proposer"), co = seatOptions("critic");
+  $("proposer").value = $("critic").value; $("critic").value = p;
+  fillTune("proposer", co); fillTune("critic", po);
+});
 $("form").addEventListener("submit", start);
 for (const ex of EXAMPLES) { const b = el("button", null, ex); b.type = "button"; b.addEventListener("click", () => { $("question").value = ex; $("question").focus(); }); $("examples").append(b); }
 loadBackends().then(refreshAuth).then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
