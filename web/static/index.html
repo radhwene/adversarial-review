@@ -780,7 +780,7 @@ async function loadBackends() {
 
 // ---------- LLM accounts (subscription sign-in, never API billing) ----------
 const AUTH_POLL_MS = 2000;
-const AUTH_LABEL = { claude: "Claude", codex: "Codex (ChatGPT)" };
+const AUTH_LABEL = { claude: "Claude", codex: "Codex (ChatGPT)", gemini: "Gemini (Google)" };
 const LOGIN_ACTIVE = new Set(["starting", "awaiting_user", "verifying"]);
 let authTimer = null;
 const authDraft = {};  // pasted code survives the 2 s re-render even when the input lost focus

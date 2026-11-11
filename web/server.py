@@ -489,6 +489,7 @@ def main(argv=None) -> None:
     parser.add_argument("--claude-model", default=None)
     parser.add_argument("--codex-model", default=None, help="model for codex exec -m (account-dependent)")
     parser.add_argument("--deepseek-model", default=None, help="DeepSeek model (default deepseek-chat); needs DEEPSEEK_API_KEY")
+    parser.add_argument("--gemini-model", default=None, help="Gemini model alias or id (default: the CLI's own); Login with Google")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per agent turn")
     parser.add_argument("--mock-delay", type=float, default=0.8, help="simulated latency of the mock backend")
     parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
@@ -514,7 +515,7 @@ def main(argv=None) -> None:
         parser.error(f"--trusted-proxy: {exc}")
     registry = build_registry(codex_model=args.codex_model, claude_model=args.claude_model,
                               timeout=args.timeout, mock_delay=args.mock_delay,
-                              deepseek_model=args.deepseek_model)
+                              deepseek_model=args.deepseek_model, gemini_model=args.gemini_model)
     projects = ProjectStore(args.projects_dir)
     projects.create(DEFAULT_PROJECT)
     server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies,

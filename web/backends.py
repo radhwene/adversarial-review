@@ -82,6 +82,9 @@ def _run_cli(argv: List[str], prompt: str, cwd: str, timeout: float) -> subproce
 # Pure reasoning: empty cwd, no user/global CLAUDE.md or hooks (they would leak the operator's
 # own instructions into the debate), no tools, no MCP servers.
 CLAUDE_ISOLATION_FLAGS = ["--setting-sources", "project", "--tools", "", "--strict-mcp-config"]
+# Same idea for gemini: plan mode is read-only (no file edits, no shell), no extensions, and the
+# empty scratch dir is trusted so headless mode does not stop on the folder-trust prompt.
+GEMINI_ISOLATION_FLAGS = ["--approval-mode", "plan", "-e", "none", "--skip-trust"]
 
 
 class ClaudeBackend(Backend):
@@ -185,6 +188,62 @@ class CodexBackend(Backend):
         if not text:
             raise BackendError("codex returned empty output")
         return text
+
+
+def parse_gemini_json(stdout: str) -> Optional[Dict]:
+    """The document printed by ``gemini -o json``, or None when stdout is not a JSON object."""
+    try:
+        doc = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def gemini_error_message(doc: Optional[Dict]) -> Optional[str]:
+    """``{"error": {"type", "message", "code"}}`` as written by gemini on a failed headless run."""
+    error = (doc or {}).get("error")
+    if not error:
+        return None
+    return str(error.get("message") or error) if isinstance(error, dict) else str(error)
+
+
+class GeminiBackend(Backend):
+    """``gemini`` headless (Login with Google), read-only plan mode, no extensions, empty scratch dir."""
+
+    name = "gemini"
+    models = ("auto", "pro", "flash", "flash-lite")  # gemini -m aliases, CLI 0.66.0; no effort flag
+
+    def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+        self.model = model
+        self.timeout = timeout
+
+    def available(self) -> bool:
+        return shutil.which("gemini") is not None
+
+    def build_argv(self, model: Optional[str] = None) -> List[str]:
+        # -p "" makes the run headless; the prompt itself comes on stdin (kept out of ps / argv limits).
+        argv = ["gemini", *GEMINI_ISOLATION_FLAGS, "-o", "json"]
+        model = model or self.model
+        if model:
+            argv += ["-m", model]
+        return argv + ["-p", ""]
+
+    def complete(self, request: TurnRequest) -> str:
+        with tempfile.TemporaryDirectory(prefix="advr-gemini-") as scratch:
+            started = time.monotonic()
+            proc = _run_cli(self.build_argv(request.model), request.prompt, scratch, self.timeout)
+            logger.info("gemini role=%s round=%d model=%s exit=%d %.1fs", request.role, request.round,
+                        request.model or self.model or "default", proc.returncode, time.monotonic() - started)
+        doc = parse_gemini_json(proc.stdout)
+        error = gemini_error_message(doc)
+        if proc.returncode != 0 or error:
+            raise BackendError(f"gemini exited {proc.returncode}: {error or _tail(proc.stderr or proc.stdout)}")
+        if doc is None:
+            raise BackendError(f"gemini returned non-JSON output: {_tail(proc.stdout)}")
+        text = doc.get("response")
+        if not isinstance(text, str) or not text.strip():
+            raise BackendError("gemini returned empty output")
+        return text.strip()
 
 
 class MockBackend(Backend):
@@ -292,10 +351,11 @@ def _deepseek_error(exc: "urllib.error.HTTPError") -> str:
 
 def build_registry(codex_model: Optional[str] = None, claude_model: Optional[str] = None,
                    timeout: float = DEFAULT_TIMEOUT_SECONDS, mock_delay: float = 0.0,
-                   deepseek_model: Optional[str] = None) -> Dict[str, Backend]:
+                   deepseek_model: Optional[str] = None, gemini_model: Optional[str] = None) -> Dict[str, Backend]:
     return {
         "claude": ClaudeBackend(model=claude_model, timeout=timeout),
         "codex": CodexBackend(model=codex_model, timeout=timeout),
         "deepseek": DeepSeekBackend(model=deepseek_model, timeout=timeout),
+        "gemini": GeminiBackend(model=gemini_model, timeout=timeout),
         "mock": MockBackend(delay=mock_delay),
     }
