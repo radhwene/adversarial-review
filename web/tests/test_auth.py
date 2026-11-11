@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 
@@ -72,7 +73,7 @@ class AuthManagerTests(unittest.TestCase):
                 url_hosts=frozenset({"claude.com", "claude.ai"}), takes_code=True),
             "codex": ProviderSpec(
                 login_argv=(exe, self.codex_py, codex_sleep, codex_rc),
-                status_argv=(exe, "-c", 'print("Not logged in")'),
+                status_argv=(exe, "-c", 'import sys; print("Not logged in", file=sys.stderr)'),
                 logout_argv=(exe, "-c", "pass"),
                 parse_status=parse_codex_status,
                 url_hosts=frozenset({"auth.openai.com"}), takes_code=False),
@@ -184,6 +185,31 @@ class AuthManagerTests(unittest.TestCase):
             "codex": {"logged_in": False, "account": None, "detail": "", "takes_code": False, "login": None},
         })
 
+    def test_status_reads_codex_verdict_from_stderr_of_a_real_process(self):
+        exe = sys.executable
+        spec = ProviderSpec((exe,), (exe, "-c", 'import sys; print("Logged in using ChatGPT", file=sys.stderr)'), (exe,),
+                            parse_codex_status, frozenset(), False)
+        st = AuthManager({"codex": spec}).status("codex")
+        self.assertEqual((st.logged_in, st.account), (True, SUBSCRIPTION))
+
+    def test_status_started_before_login_end_is_not_cached(self):
+        exe = sys.executable
+        flag = os.path.join(self.tmp.name, "logged_in")
+        script = ("import os, sys, time; was = os.path.exists(sys.argv[1]); time.sleep(0.5);"
+                  "print('Logged in using ChatGPT' if was else 'Not logged in', file=sys.stderr)")
+        spec = ProviderSpec((exe,), (exe, "-c", script, flag), (exe,), parse_codex_status, frozenset(), False)
+        mgr = AuthManager({"codex": spec})
+        results = []
+        t = threading.Thread(target=lambda: results.append(mgr.status("codex")))
+        t.start()
+        time.sleep(0.2)              # status check is in flight, saw "signed out"
+        open(flag, "w").close()      # login finishes meanwhile
+        with mgr._lock:
+            mgr._invalidate("codex")
+        t.join()
+        self.assertFalse(results[0].logged_in)          # the in-flight answer is stale...
+        self.assertTrue(mgr.status("codex").logged_in)  # ...and was not cached
+
     def test_missing_cli_reports_not_installed(self):
         spec = ProviderSpec(("nope-cli-xyz",), ("nope-cli-xyz",), ("nope-cli-xyz",), parse_codex_status,
                             frozenset(), False)
@@ -193,23 +219,31 @@ class AuthManagerTests(unittest.TestCase):
 
 class StatusParserTests(unittest.TestCase):
     def test_claude_subscription(self):
-        st = parse_claude_status(0, '{"loggedIn": true, "authMethod": "claude.ai"}')
+        st = parse_claude_status(0, '{"loggedIn": true, "authMethod": "claude.ai"}', "")
         self.assertEqual((st.logged_in, st.account), (True, SUBSCRIPTION))
 
     def test_claude_console_is_flagged_as_api_billing(self):
-        st = parse_claude_status(0, '{"loggedIn": true, "authMethod": "console"}')
+        st = parse_claude_status(0, '{"loggedIn": true, "authMethod": "console"}', "")
         self.assertEqual((st.logged_in, st.account), (True, API_BILLING))
 
     def test_claude_logged_out_and_garbage(self):
-        self.assertFalse(parse_claude_status(1, '{"loggedIn": false, "authMethod": "none"}').logged_in)
-        self.assertFalse(parse_claude_status(0, "not json").logged_in)
-        self.assertFalse(parse_claude_status(0, "[]").logged_in)
+        self.assertFalse(parse_claude_status(1, '{"loggedIn": false, "authMethod": "none"}', "").logged_in)
+        self.assertFalse(parse_claude_status(0, "not json", "").logged_in)
+        self.assertFalse(parse_claude_status(0, "[]", "").logged_in)
 
     def test_codex_texts(self):
-        self.assertEqual(parse_codex_status(0, "Logged in using ChatGPT\n").account, SUBSCRIPTION)
-        self.assertEqual(parse_codex_status(0, "Logged in using an API key - sk-***\n").account, API_BILLING)
-        self.assertFalse(parse_codex_status(0, "Not logged in\n").logged_in)
-        self.assertFalse(parse_codex_status(0, "Logged in somehow new\n").logged_in)  # unknown -> not in
+        self.assertEqual(parse_codex_status(0, "Logged in using ChatGPT\n", "").account, SUBSCRIPTION)
+        self.assertEqual(parse_codex_status(0, "Logged in using an API key - sk-***\n", "").account, API_BILLING)
+        self.assertFalse(parse_codex_status(0, "Not logged in\n", "").logged_in)
+        self.assertFalse(parse_codex_status(0, "Logged in somehow new\n", "").logged_in)  # unknown -> not in
+
+    def test_codex_verdict_on_stderr_is_read(self):  # what codex 0.142.5 actually does
+        self.assertEqual(parse_codex_status(0, "", "Logged in using ChatGPT\n").account, SUBSCRIPTION)
+        self.assertFalse(parse_codex_status(0, "", "Not logged in\n").logged_in)
+
+    def test_claude_ignores_stderr_noise(self):
+        st = parse_claude_status(0, '{"loggedIn": true, "authMethod": "claude.ai"}', "warning: something\n")
+        self.assertEqual(st.account, SUBSCRIPTION)
 
     def test_url_allowlist_rejects_lookalikes(self):
         hosts = frozenset({"claude.com"})

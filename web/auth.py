@@ -71,8 +71,9 @@ class AuthStatus:
     detail: str = ""
 
 
-def parse_claude_status(returncode: int, stdout: str) -> AuthStatus:
-    """``claude auth status --json``: exit 1 when logged out; ``authMethod`` 'claude.ai' = subscription."""
+def parse_claude_status(returncode: int, stdout: str, stderr: str) -> AuthStatus:
+    """``claude auth status --json``: exit 1 when logged out; ``authMethod`` 'claude.ai' = subscription.
+    The JSON is on stdout; stderr is ignored so a warning there cannot break the parse."""
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
@@ -87,10 +88,11 @@ CODEX_CHATGPT = "Logged in using ChatGPT"
 CODEX_API_KEY = "Logged in using an API key"
 
 
-def parse_codex_status(returncode: int, stdout: str) -> AuthStatus:
-    """``codex login status`` has no JSON and exits 0 either way, so its text is the only signal
-    (codex 0.142.5, pinned in the Dockerfile). Unknown text is reported as logged out, never in."""
-    text = ANSI_ESCAPE.sub("", stdout)
+def parse_codex_status(returncode: int, stdout: str, stderr: str) -> AuthStatus:
+    """``codex login status`` has no JSON, exits 0 either way and prints its verdict on **stderr**
+    (codex 0.142.5, pinned in the Dockerfile), so both streams are read. Unknown text is reported
+    as logged out, never in."""
+    text = ANSI_ESCAPE.sub("", stdout + "\n" + stderr)
     if CODEX_CHATGPT in text:
         return AuthStatus(True, SUBSCRIPTION, "chatgpt")
     if CODEX_API_KEY in text:
@@ -103,7 +105,7 @@ class ProviderSpec:
     login_argv: Tuple[str, ...]
     status_argv: Tuple[str, ...]
     logout_argv: Tuple[str, ...]
-    parse_status: Callable[[int, str], AuthStatus]
+    parse_status: Callable[[int, str, str], AuthStatus]  # (returncode, stdout, stderr)
     url_hosts: frozenset
     takes_code: bool  # claude: operator pastes a code back; codex: device code, CLI polls
 
@@ -163,6 +165,9 @@ class AuthManager:
         self._lock = threading.Lock()
         self._sessions: Dict[str, LoginSession] = {}
         self._status_cache: Dict[str, Tuple[float, AuthStatus]] = {}
+        # bumped when a login/logout ends: a status check started before that must not be cached,
+        # or the UI (which stops polling once the login is terminal) would keep a stale "signed out"
+        self._generation: Dict[str, int] = {}
 
     def _spec(self, provider: str) -> ProviderSpec:
         spec = self.providers.get(provider)
@@ -176,16 +181,24 @@ class AuthManager:
         cached = self._status_cache.get(provider)
         if cached and time.monotonic() - cached[0] < STATUS_CACHE_SECONDS:
             return cached[1]
+        generation = self._generation.get(provider, 0)
         try:
             proc = subprocess.run(list(spec.status_argv), capture_output=True, text=True,
                                   timeout=STATUS_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL)
-            result = spec.parse_status(proc.returncode, proc.stdout)
+            result = spec.parse_status(proc.returncode, proc.stdout, proc.stderr)
         except FileNotFoundError:
             result = AuthStatus(False, detail="CLI not installed")
         except subprocess.TimeoutExpired:
             result = AuthStatus(False, detail="status check timed out")
-        self._status_cache[provider] = (time.monotonic(), result)
+        with self._lock:
+            if self._generation.get(provider, 0) == generation:
+                self._status_cache[provider] = (time.monotonic(), result)
         return result
+
+    def _invalidate(self, provider: str) -> None:
+        """Caller holds ``self._lock``."""
+        self._generation[provider] = self._generation.get(provider, 0) + 1
+        self._status_cache.pop(provider, None)
 
     def overview(self) -> Dict[str, Dict]:
         out = {}
@@ -247,7 +260,7 @@ class AuthManager:
                 else:
                     session.state = FAILED
                     session.error = f"exit {returncode}: " + " / ".join(session.tail[-2:])
-            self._status_cache.pop(session.provider, None)
+            self._invalidate(session.provider)
         logger.info("auth: %s login ended: %s", session.provider, session.state)
 
     def _expire(self, session: LoginSession) -> None:
@@ -295,6 +308,7 @@ class AuthManager:
         self.cancel(provider)
         subprocess.run(list(spec.logout_argv), capture_output=True, text=True,
                        timeout=STATUS_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL)
-        self._status_cache.pop(provider, None)
+        with self._lock:
+            self._invalidate(provider)
         logger.info("auth: %s logged out", provider)
         return self.status(provider)
