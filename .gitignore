@@ -19,3 +19,10 @@ logs/
 *~
 .idea/
 .vscode/
+
+# Web UI debate transcripts
+web/runs/
+__pycache__/
+
+# impeccable review screenshots
+.impeccable/
