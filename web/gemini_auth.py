@@ -32,6 +32,9 @@ AUTH_TYPE = "oauth-personal"  # "Login with Google"
 CREDS_FILE = "oauth_creds.json"
 ACCOUNTS_FILE = "google_accounts.json"
 SETTINGS_FILE = "settings.json"
+# gemini 0.66.0 records every headless session under .gemini/tmp and has no switch to turn that off;
+# the shortest retention it accepts is "1d" (DEFAULT_MIN_RETENTION). The debate trace is kept elsewhere.
+SESSION_MAX_AGE = "1d"
 API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 TERMINAL_COLUMNS = 4000  # wide enough that the CLI never wraps the long sign-in URL
 POLL_SECONDS = 0.5
@@ -54,12 +57,14 @@ def _read_json(path: str) -> Optional[Dict]:
 
 
 def ensure_settings(directory: str) -> None:
-    """Select "Login with Google" and turn usage statistics off, keeping any other setting."""
+    """Select "Login with Google", turn usage statistics off and keep recorded sessions one day only,
+    leaving every other setting untouched."""
     os.makedirs(directory, mode=0o700, exist_ok=True)
     path = os.path.join(directory, SETTINGS_FILE)
     settings = _read_json(path) or {}
     settings.setdefault("security", {}).setdefault("auth", {})["selectedType"] = AUTH_TYPE
     settings.setdefault("privacy", {})["usageStatisticsEnabled"] = False
+    settings.setdefault("general", {})["sessionRetention"] = {"enabled": True, "maxAge": SESSION_MAX_AGE}
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".settings-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(settings, fh, indent=2)

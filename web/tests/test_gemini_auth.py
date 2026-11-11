@@ -116,7 +116,8 @@ class GeminiHelperTests(unittest.TestCase):
         self.assertEqual(json.loads(self.read("settings.json")), {
             "ui": {"theme": "dark"},
             "security": {"folderTrust": {"enabled": False}, "auth": {"selectedType": "oauth-personal"}},
-            "privacy": {"usageStatisticsEnabled": False}})
+            "privacy": {"usageStatisticsEnabled": False},
+            "general": {"sessionRetention": {"enabled": True, "maxAge": "1d"}}})
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.dir, "settings.json")).st_mode), 0o600)
 
     def test_status_command_prints_json(self):
