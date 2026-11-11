@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sys
 import subprocess
 import threading
 import time
@@ -33,6 +35,9 @@ URL_PATTERN = re.compile(r"https://[^\s\"'<>]+")
 DEVICE_CODE_PATTERN = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 # claude's code is "<authorization code>#<state>": URL-safe base64 pieces joined by '#'
 CLAUDE_CODE_PATTERN = re.compile(r"^[A-Za-z0-9_\-#.~]{16,1024}$")
+# Google's authorization code looks like "4/0AVG...": URL-safe characters plus '/'
+GOOGLE_CODE_PATTERN = re.compile(r"^[A-Za-z0-9_\-/.~]{16,1024}$")
+GEMINI_HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gemini_auth.py")
 
 # session states
 STARTING = "starting"          # CLI spawned, URL not seen yet
@@ -100,6 +105,19 @@ def parse_codex_status(returncode: int, stdout: str, stderr: str) -> AuthStatus:
     return AuthStatus(False)
 
 
+def parse_gemini_status(returncode: int, stdout: str, stderr: str) -> AuthStatus:
+    """``gemini_auth.py status`` prints one JSON object; anything else counts as logged out."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return AuthStatus(False, detail="unreadable status output")
+    if returncode != 0 or not isinstance(data, dict) or data.get("logged_in") is not True:
+        return AuthStatus(False)
+    if data.get("account") == "api_key":
+        return AuthStatus(True, API_BILLING, "GEMINI_API_KEY")
+    return AuthStatus(True, SUBSCRIPTION, "google")
+
+
 @dataclass(frozen=True)
 class ProviderSpec:
     login_argv: Tuple[str, ...]
@@ -107,7 +125,8 @@ class ProviderSpec:
     logout_argv: Tuple[str, ...]
     parse_status: Callable[[int, str, str], AuthStatus]  # (returncode, stdout, stderr)
     url_hosts: frozenset
-    takes_code: bool  # claude: operator pastes a code back; codex: device code, CLI polls
+    takes_code: bool  # claude, gemini: operator pastes a code back; codex: device code, CLI polls
+    code_pattern: Optional["re.Pattern"] = None  # shape of the pasted code (takes_code providers)
 
 
 DEFAULT_PROVIDERS: Dict[str, ProviderSpec] = {
@@ -118,6 +137,7 @@ DEFAULT_PROVIDERS: Dict[str, ProviderSpec] = {
         parse_status=parse_claude_status,
         url_hosts=frozenset({"claude.com", "claude.ai"}),
         takes_code=True,
+        code_pattern=CLAUDE_CODE_PATTERN,
     ),
     "codex": ProviderSpec(
         login_argv=("codex", "login", "--device-auth"),
@@ -126,6 +146,15 @@ DEFAULT_PROVIDERS: Dict[str, ProviderSpec] = {
         parse_status=parse_codex_status,
         url_hosts=frozenset({"auth.openai.com"}),
         takes_code=False,
+    ),
+    "gemini": ProviderSpec(
+        login_argv=(sys.executable, GEMINI_HELPER, "login"),
+        status_argv=(sys.executable, GEMINI_HELPER, "status"),
+        logout_argv=(sys.executable, GEMINI_HELPER, "logout"),
+        parse_status=parse_gemini_status,
+        url_hosts=frozenset({"accounts.google.com"}),
+        takes_code=True,
+        code_pattern=GOOGLE_CODE_PATTERN,
     ),
 }
 
@@ -277,7 +306,7 @@ class AuthManager:
         code = code.strip()
         if not spec.takes_code:
             raise InvalidAuthCode(f"{provider} does not take a code: enter it on the sign-in page")
-        if not CLAUDE_CODE_PATTERN.match(code):
+        if spec.code_pattern is None or not spec.code_pattern.match(code):
             raise InvalidAuthCode("code looks wrong: copy the whole code shown after sign-in")
         with self._lock:
             session = self._sessions.get(provider)

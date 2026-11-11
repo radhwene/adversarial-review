@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import auth  # noqa: E402
 from auth import (AWAITING_USER, COMPLETED, EXPIRED, FAILED, SUBSCRIPTION, API_BILLING, AuthManager,  # noqa: E402
                   InvalidAuthCode, NoLoginInProgress, ProviderSpec, UnknownProvider,
-                  parse_claude_status, parse_codex_status)
+                  CLAUDE_CODE_PATTERN, parse_claude_status, parse_codex_status, parse_gemini_status)
 
 GOOD_CODE = "AbCdEf0123456789_-xyz#StAtE-0123456789"
 
@@ -70,7 +70,7 @@ class AuthManagerTests(unittest.TestCase):
                 status_argv=(exe, "-c", 'print(\'{"loggedIn": false}\'); raise SystemExit(1)'),
                 logout_argv=(exe, "-c", "pass"),
                 parse_status=parse_claude_status,
-                url_hosts=frozenset({"claude.com", "claude.ai"}), takes_code=True),
+                url_hosts=frozenset({"claude.com", "claude.ai"}), takes_code=True, code_pattern=CLAUDE_CODE_PATTERN),
             "codex": ProviderSpec(
                 login_argv=(exe, self.codex_py, codex_sleep, codex_rc),
                 status_argv=(exe, "-c", 'import sys; print("Not logged in", file=sys.stderr)'),
