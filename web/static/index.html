@@ -150,6 +150,7 @@ kbd { font: var(--fs-eyebrow)/1 var(--mono); padding: 2px var(--space-1); border
 .acct a.btn { text-decoration: none; color: var(--accent); width: 100%; }
 .devcode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3);
   background: var(--code); border-radius: var(--rayon); font: 700 var(--fs-lg)/1.2 var(--mono); letter-spacing: .08em; user-select: all; }
+.acct-warn { margin: var(--space-2) 0 0; font-size: var(--fs-sm); color: var(--alerte); }
 .acct form { display: flex; flex-direction: column; gap: var(--space-2); }
 .acct .err { color: var(--alerte); font-size: var(--fs-sm); margin-top: var(--space-2); }
 .acct .row { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
@@ -356,6 +357,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <section>
         <h2 class="rail-title" id="acc-title">Comptes LLM</h2>
         <div class="stack-2" id="accounts" role="group" aria-labelledby="acc-title" aria-live="polite">Chargement…</div>
+        <div class="stack-2" id="api-keys" role="group" aria-label="Clés API payantes"></div>
       </section>
     </div>
   </aside>
@@ -765,11 +767,13 @@ async function loadBackends() {
   const names = Object.keys(backends);
   const defaults = { proposer: "claude", critic: "claude", judge: "claude" };
   for (const role of ["proposer", "critic", "judge"]) {
-    const sel = $(role);
+    const sel = $(role); const current = sel.value; sel.replaceChildren();
     for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
     const saved = localStorageGet("role-" + role);
-    sel.value = saved && backends[saved]?.available ? saved : backends[defaults[role]]?.available ? defaults[role] : "mock";
-    fillTune(role);
+    const pick = [current, saved, defaults[role]].find((n) => n && backends[n]?.available);
+    const keepTune = current && current === (pick || "mock") ? seatOptions(role) : undefined;
+    sel.value = pick || "mock";
+    fillTune(role, keepTune);
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
@@ -857,6 +861,54 @@ async function refreshAuth() {
     span.title = n + (data[n].logged_in ? " connecté" : " non connecté : voir Comptes LLM");
   }
   if (Object.values(data).some((a) => a.login && LOGIN_ACTIVE.has(a.login.state))) authTimer = setTimeout(refreshAuth, AUTH_POLL_MS);
+}
+
+// ---------- pay-per-use API keys (DeepSeek has no subscription CLI) ----------
+const KEY_LABEL = { deepseek: "DeepSeek" };
+
+async function keyPost(provider, action, body) {
+  const res = await fetch(`/api/keys/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  let data = {}; try { data = await res.json(); } catch (_) { /* empty body */ }
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  return data;
+}
+
+function keyCard(name, k) {
+  const label = KEY_LABEL[name] || name;
+  const card = el("div", "acct"); const head = el("div", "acct-head");
+  head.append(el("i", "dot" + (k.configured ? "" : " off")), el("b", null, label),
+              el("span", "st" + (k.configured ? " warn" : ""), k.configured ? "Clé " + k.hint : "Pas de clé"));
+  card.append(head, el("p", "acct-warn", "⚠️ API payante — chaque tour de débat est facturé sur cette clé, sans plafond."));
+  const showErr = (msg) => { card.querySelector(".err")?.remove(); card.append(el("div", "err", msg)); };
+  const done = async () => { await refreshKeys(); await loadBackends(); refreshAuth(); };
+  if (k.source === "env") {
+    card.append(el("p", "acct-step", "Clé définie par variable d'environnement : à changer côté serveur."));
+    return card;
+  }
+  const f = el("form"); f.autocomplete = "off";
+  const inp = el("input", "field"); inp.type = "password"; inp.id = "key-" + name; inp.required = true; inp.spellcheck = false;
+  inp.autocomplete = "off"; inp.setAttribute("autocapitalize", "off"); inp.placeholder = "sk-…";
+  inp.setAttribute("aria-label", "Clé API " + label);
+  const ok = el("button", "btn primary", k.configured ? "Remplacer la clé" : "Enregistrer la clé"); ok.type = "submit";
+  f.append(inp, ok);
+  f.addEventListener("submit", async (e) => { e.preventDefault(); ok.disabled = true;
+    try { await keyPost(name, "save", { key: inp.value }); } catch (ex) { ok.disabled = false; showErr(ex.message); return; }
+    inp.value = ""; done(); });
+  card.append(f);
+  if (k.configured) {
+    const row = el("div", "row"); const rm = el("button", "btn ghost", "Supprimer la clé"); rm.type = "button";
+    rm.addEventListener("click", async () => { rm.disabled = true;
+      try { await keyPost(name, "clear"); } catch (ex) { rm.disabled = false; showErr(ex.message); return; } done(); });
+    row.append(rm); card.append(row);
+  }
+  return card;
+}
+
+async function refreshKeys() {
+  const box = $("api-keys");
+  try { const res = await fetch("/api/keys"); if (!res.ok) throw new Error("HTTP " + res.status);
+    box.replaceChildren(...Object.entries(await res.json()).map(([n, k]) => keyCard(n, k))); }
+  catch (ex) { box.textContent = "Clés indisponibles : " + ex.message; }
 }
 
 // ---------- projects & docket ----------
@@ -962,7 +1014,7 @@ $("swap").addEventListener("click", () => {
 });
 $("form").addEventListener("submit", start);
 for (const ex of EXAMPLES) { const b = el("button", null, ex); b.type = "button"; b.addEventListener("click", () => { $("question").value = ex; $("question").focus(); }); $("examples").append(b); }
-loadBackends().then(refreshAuth).then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
+loadBackends().then(refreshAuth).then(refreshKeys).then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
 </script>
 </body>
 </html>
