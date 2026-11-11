@@ -421,17 +421,20 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             body = self._read_json_body()
             if body is None:
                 return
-            if action == "clear":
-                self._json(HTTPStatus.OK, store.clear())
-                return
             key = body.get("key")
-            if not isinstance(key, str):
+            if action == "save" and not isinstance(key, str):
                 self._error(HTTPStatus.BAD_REQUEST, "key must be a string")
                 return
             try:
-                self._json(HTTPStatus.OK, store.set(key))
+                status = store.clear() if action == "clear" else store.set(key)
             except InvalidApiKey as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except OSError:  # unwritable volume: the traceback names the path, never the key
+                logger.exception("could not %s the %s API key", action, provider)
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "could not store the key on the server")
+                return
+            self._json(HTTPStatus.OK, status)
 
         def _auth_action(self, provider: str, action: str) -> None:
             if not self._secure_transport():

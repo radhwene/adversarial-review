@@ -375,6 +375,11 @@ class BasicAuthConfigTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
 
+def deepseek_key_store_for_test(directory):
+    from backends import deepseek_key_store
+    return deepseek_key_store(directory)
+
+
 class ApiKeyRouteTests(unittest.TestCase):
     """/api/keys: HTTPS gate, real 0600 store, the key never comes back in a body or a log line."""
 
@@ -440,6 +445,15 @@ class ApiKeyRouteTests(unittest.TestCase):
         resp, raw = self.request("POST", "/api/keys/deepseek/save", {"key": 12345}, headers=self.HTTPS)
         self.assertEqual((resp.status, json.loads(raw)), (400, {"error": "key must be a string"}))
         self.assertEqual(self.store.get(), "")
+
+    def test_unwritable_store_is_a_500_json_error_without_the_key(self):
+        blocker = os.path.join(self.keys_dir.name, "not-a-dir")
+        open(blocker, "w").close()
+        self.app.api_keys["deepseek"] = deepseek_key_store_for_test(os.path.join(blocker, "keys"))
+        with self.assertLogs("advr.server", "ERROR") as logs:
+            resp, raw = self.request("POST", "/api/keys/deepseek/save", {"key": self.KEY}, headers=self.HTTPS)
+        self.assertEqual((resp.status, json.loads(raw)), (500, {"error": "could not store the key on the server"}))
+        self.assertNotIn(self.KEY, "\n".join(logs.output))
 
     def test_unknown_provider_and_form_post(self):
         resp, _ = self.request("POST", "/api/keys/claude/save", {"key": self.KEY}, headers=self.HTTPS)
