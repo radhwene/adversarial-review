@@ -36,6 +36,7 @@ MIN_ROUNDS = 1
 MAX_ROUNDS = 5
 MAX_QUESTION_CHARS = 4000
 
+SEAT_ROLES = ("proposer", "critic", "judge")
 ROLE_STATUS_BLOCK = {"proposer": "PROPOSER_STATUS", "critic": "CRITIC_STATUS", "judge": "JUDGE_STATUS"}
 VERDICT_ACCEPT = "ACCEPT"
 
@@ -77,6 +78,8 @@ class DebateConfig:
     judge: str
     max_rounds: int = 3
     project: str = "default"
+    # per seat, e.g. {"proposer": {"model": "opus", "effort": "high"}}; a missing key = backend default
+    options: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
     def validate(self, registry: Dict[str, Backend]) -> None:
         if not self.question.strip():
@@ -85,12 +88,33 @@ class DebateConfig:
             raise InvalidDebateConfig(f"question exceeds {MAX_QUESTION_CHARS} chars")
         if not (MIN_ROUNDS <= self.max_rounds <= MAX_ROUNDS):
             raise InvalidDebateConfig(f"max_rounds must be in [{MIN_ROUNDS}, {MAX_ROUNDS}]")
-        for role in ("proposer", "critic", "judge"):
+        for role in SEAT_ROLES:
             name = getattr(self, role)
             if name not in registry:
                 raise InvalidDebateConfig(f"unknown backend for {role}: {name!r}")
             if not registry[name].available():
                 raise InvalidDebateConfig(f"backend {name!r} ({role}) is not installed")
+        self._validate_options(registry)
+
+    def _validate_options(self, registry: Dict[str, Backend]) -> None:
+        if not isinstance(self.options, dict):
+            raise InvalidDebateConfig("options must be an object")
+        for role, opts in self.options.items():
+            if role not in SEAT_ROLES:
+                raise InvalidDebateConfig(f"options: unknown seat {role!r}")
+            if not isinstance(opts, dict):
+                raise InvalidDebateConfig(f"options.{role} must be an object")
+            backend = registry[getattr(self, role)]
+            for key, value in opts.items():
+                allowed = {"model": backend.models, "effort": backend.efforts}.get(key)
+                if allowed is None:
+                    raise InvalidDebateConfig(f"options.{role}: unknown option {key!r}")
+                if value not in allowed:
+                    raise InvalidDebateConfig(f"options.{role}.{key}: {value!r} not offered by {backend.name}"
+                                              + (f" (choose {', '.join(allowed)})" if allowed else ""))
+
+    def seat(self, role: str, key: str) -> Optional[str]:
+        return self.options.get(role, {}).get(key)
 
 
 @dataclass
@@ -179,7 +203,9 @@ class DebateRunner:
         agent = getattr(debate.config, role)
         debate.emit("turn_started", role=role, agent=agent, round=round_)
         started = time.monotonic()
-        raw = self.registry[agent].complete(TurnRequest(role=role, round=round_, prompt=prompt))
+        cfg = debate.config
+        raw = self.registry[agent].complete(TurnRequest(role=role, round=round_, prompt=prompt,
+                                                        model=cfg.seat(role, "model"), effort=cfg.seat(role, "effort")))
         block = ROLE_STATUS_BLOCK[role]
         status = parse_status_block(raw, block)
         if status is None:

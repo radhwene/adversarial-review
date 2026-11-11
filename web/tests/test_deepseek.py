@@ -68,6 +68,10 @@ class DeepSeekBackendTests(unittest.TestCase):
         self.assertEqual(FakeDeepSeek.seen, [("Bearer sk-test", {
             "model": "deepseek-reasoner", "stream": False, "messages": [{"role": "user", "content": "PROMPT"}]})])
 
+    def test_seat_model_overrides_default(self):
+        self.backend(model="deepseek-chat").complete(TurnRequest("judge", 2, "P", model="deepseek-reasoner"))
+        self.assertEqual(FakeDeepSeek.seen[0][1]["model"], "deepseek-reasoner")
+
     def test_http_error_surfaces_api_message(self):
         FakeDeepSeek.mode = "401"
         with self.assertRaisesRegex(BackendError, r"^deepseek HTTP 401: Authentication Fails$"):

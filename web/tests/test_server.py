@@ -60,7 +60,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn(b"<title>Adversarial Reasoning</title>", raw)
         resp, raw = self.request("GET", "/api/backends")
-        self.assertEqual(json.loads(raw), {"mock": {"available": True}})
+        self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
 
     def test_debate_streams_to_completion_twice(self):
         for _ in range(2):  # anti-flake: two full runs in a row
@@ -95,6 +95,10 @@ class ServerTests(unittest.TestCase):
             ({"question": "", "proposer": "mock", "critic": "mock", "judge": "mock"}, "empty"),
             ({"question": "q", "proposer": "mock"}, "invalid request"),
             ({"question": "q", "proposer": "mock", "critic": "mock", "judge": "mock", "max_rounds": 9}, "max_rounds"),
+            ({"question": "q", "proposer": "mock", "critic": "mock", "judge": "mock",
+              "options": {"judge": {"effort": "high"}}}, "options.judge.effort: 'high' not offered by mock"),
+            ({"question": "q", "proposer": "mock", "critic": "mock", "judge": "mock", "options": "opus"},
+             "options must be an object"),
         ]
         for body, msg in cases:
             with self.subTest(body=body):

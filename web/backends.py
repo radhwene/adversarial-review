@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,16 @@ class TurnRequest:
     role: str  # "proposer" | "critic" | "judge"
     round: int
     prompt: str
+    model: Optional[str] = None   # None: the backend's default (its --model flag or the CLI's own)
+    effort: Optional[str] = None  # None: the CLI's default reasoning effort
 
 
 class Backend:
     name = "base"
+    # Values the UI may pick per seat. They end up in a CLI argv or an API body, so anything outside
+    # these tuples is rejected by DebateConfig.validate. Empty tuple: no choice offered.
+    models: Tuple[str, ...] = ()
+    efforts: Tuple[str, ...] = ()
 
     def available(self) -> bool:
         raise NotImplementedError
@@ -82,6 +88,8 @@ class ClaudeBackend(Backend):
     """``claude --print`` isolated from user settings, tools and MCP, run in an empty scratch dir."""
 
     name = "claude"
+    models = ("fable", "opus", "sonnet", "haiku")           # aliases for the latest of each family
+    efforts = ("low", "medium", "high", "xhigh", "max")    # claude --effort, Claude Code 2.1.322
 
     def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self.model = model
@@ -90,18 +98,22 @@ class ClaudeBackend(Backend):
     def available(self) -> bool:
         return shutil.which("claude") is not None
 
-    def build_argv(self) -> List[str]:
+    def build_argv(self, model: Optional[str] = None, effort: Optional[str] = None) -> List[str]:
         argv = ["claude", "--print", *CLAUDE_ISOLATION_FLAGS]
-        if self.model:
-            argv += ["--model", self.model]
+        model = model or self.model
+        if model:
+            argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
         return argv
 
     def complete(self, request: TurnRequest) -> str:
         with tempfile.TemporaryDirectory(prefix="advr-claude-") as scratch:
             started = time.monotonic()
-            proc = _run_cli(self.build_argv(), request.prompt, scratch, self.timeout)
-            logger.info("claude role=%s round=%d exit=%d %.1fs",
-                        request.role, request.round, proc.returncode, time.monotonic() - started)
+            proc = _run_cli(self.build_argv(request.model, request.effort), request.prompt, scratch, self.timeout)
+            logger.info("claude role=%s round=%d model=%s effort=%s exit=%d %.1fs", request.role, request.round,
+                        request.model or self.model or "default", request.effort or "default",
+                        proc.returncode, time.monotonic() - started)
         if proc.returncode != 0:
             raise BackendError(f"claude exited {proc.returncode}: {_tail(proc.stderr or proc.stdout)}")
         text = proc.stdout.strip()
@@ -137,6 +149,8 @@ class CodexBackend(Backend):
     """``codex exec --json`` in a read-only sandbox; the answer is read from ``-o`` (final message only)."""
 
     name = "codex"
+    # No model choice: this server's ChatGPT-linked account only accepts the --codex-model it starts with.
+    efforts = ("low", "medium", "high")  # model_reasoning_effort
 
     def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self.model = model
@@ -145,10 +159,12 @@ class CodexBackend(Backend):
     def available(self) -> bool:
         return shutil.which("codex") is not None
 
-    def build_argv(self, scratch: str, out_file: str) -> List[str]:
+    def build_argv(self, scratch: str, out_file: str, effort: Optional[str] = None) -> List[str]:
         argv = ["codex", "exec", "--json"]
         if self.model:
             argv += ["-m", self.model]
+        if effort:
+            argv += ["-c", f"model_reasoning_effort={effort}"]
         argv += ["--sandbox", "read-only", "--skip-git-repo-check", "-C", scratch, "-o", out_file, "-"]
         return argv
 
@@ -156,9 +172,9 @@ class CodexBackend(Backend):
         with tempfile.TemporaryDirectory(prefix="advr-codex-") as scratch:
             out_file = os.path.join(scratch, "last_message.txt")
             started = time.monotonic()
-            proc = _run_cli(self.build_argv(scratch, out_file), request.prompt, scratch, self.timeout)
-            logger.info("codex role=%s round=%d exit=%d %.1fs",
-                        request.role, request.round, proc.returncode, time.monotonic() - started)
+            proc = _run_cli(self.build_argv(scratch, out_file, request.effort), request.prompt, scratch, self.timeout)
+            logger.info("codex role=%s round=%d effort=%s exit=%d %.1fs", request.role, request.round,
+                        request.effort or "default", proc.returncode, time.monotonic() - started)
             if proc.returncode != 0:
                 detail = codex_error_from_jsonl(proc.stdout) or _tail(proc.stderr)
                 raise BackendError(f"codex exited {proc.returncode}: {detail}")
@@ -223,6 +239,7 @@ class DeepSeekBackend(Backend):
     """DeepSeek over its HTTP API (stdlib urllib). Enabled when DEEPSEEK_API_KEY is set."""
 
     name = "deepseek"
+    models = ("deepseek-chat", "deepseek-reasoner")
 
     def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS,
                  api_key: Optional[str] = None, url: str = DEEPSEEK_URL) -> None:
@@ -237,7 +254,7 @@ class DeepSeekBackend(Backend):
     def complete(self, request: TurnRequest) -> str:
         if not self._api_key:
             raise BackendError(f"deepseek: {DEEPSEEK_API_KEY_ENV} is not set")
-        body = json.dumps({"model": self.model, "stream": False,
+        body = json.dumps({"model": request.model or self.model, "stream": False,
                            "messages": [{"role": "user", "content": request.prompt}]}).encode()
         req = urllib.request.Request(self.url, data=body, method="POST", headers={
             "Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"})

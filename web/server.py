@@ -303,7 +303,8 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self._json(HTTPStatus.OK, app.llm_auth.overview())
                 return
             if path == "/api/backends":
-                self._json(HTTPStatus.OK, {name: {"available": b.available()} for name, b in app.registry.items()})
+                self._json(HTTPStatus.OK, {name: {"available": b.available(), "models": list(b.models),
+                                                   "efforts": list(b.efforts)} for name, b in app.registry.items()})
                 return
             m = _EVENTS_PATH.match(path)
             if m:
@@ -373,6 +374,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     judge=str(body["judge"]),
                     max_rounds=int(body.get("max_rounds", 3)),
                     project=str(body.get("project", DEFAULT_PROJECT)),
+                    options=body.get("options") or {},
                 )
                 signed_out = app.signed_out_agents(config)
                 if signed_out:

@@ -175,6 +175,57 @@ class ConfigValidationTests(unittest.TestCase):
         missing.available.assert_called_once_with()
 
 
+class SeatOptionTests(unittest.TestCase):
+    """Per-seat model/effort: only allowlisted values reach a CLI argv."""
+
+    def setUp(self):
+        patcher = mock.patch.object(ClaudeBackend, "available", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        codex = mock.patch.object(CodexBackend, "available", return_value=True)
+        codex.start()
+        self.addCleanup(codex.stop)
+        self.registry = {"claude": ClaudeBackend(), "codex": CodexBackend(model="codex-auto-review"),
+                         "mock": MockBackend()}
+
+    def cfg(self, options):
+        return DebateConfig(question="q", proposer="claude", critic="codex", judge="mock", options=options)
+
+    def test_valid_options(self):
+        self.cfg({"proposer": {"model": "opus", "effort": "max"}, "critic": {"effort": "high"}}).validate(self.registry)
+
+    def test_rejects_bad_options(self):
+        for options, msg in [
+            ({"juge": {}}, "unknown seat 'juge'"),
+            ({"proposer": "opus"}, r"options\.proposer must be an object"),
+            ({"proposer": {"temperature": "1"}}, "unknown option 'temperature'"),
+            ({"proposer": {"model": "opus; rm -rf /"}}, r"options\.proposer\.model: 'opus; rm -rf /' not offered by claude \(choose fable, opus, sonnet, haiku\)"),
+            ({"proposer": {"effort": "ultra"}}, "not offered by claude"),
+            ({"critic": {"model": "gpt-5.5"}}, r"options\.critic\.model: 'gpt-5\.5' not offered by codex$"),
+            ({"critic": {"effort": "max"}}, "not offered by codex"),
+            ({"judge": {"effort": "low"}}, "not offered by mock"),
+        ]:
+            with self.subTest(options=options), self.assertRaisesRegex(InvalidDebateConfig, msg):
+                self.cfg(options).validate(self.registry)
+
+    def test_options_must_be_object(self):
+        with self.assertRaisesRegex(InvalidDebateConfig, "options must be an object"):
+            self.cfg(["opus"]).validate(self.registry)
+
+    def test_runner_passes_seat_options_to_each_turn(self):
+        backend = ScriptedBackend([proposer_reply("A"), critic_reply("ok", "ACCEPT", 0), JUDGE_REPLY])
+        cfg = DebateConfig(question="q", proposer="s", critic="s", judge="s", max_rounds=1,
+                           options={"proposer": {"model": "opus", "effort": "high"}, "judge": {"effort": "low"}})
+        DebateRunner({"s": backend}, None).run(Debate(config=cfg))
+        self.assertEqual([(r.role, r.model, r.effort) for r in backend.requests],
+                         [("proposer", "opus", "high"), ("critic", None, None), ("judge", None, "low")])
+
+    def test_old_snapshot_without_options_still_loads(self):
+        snap = Debate(config=DebateConfig(question="q", proposer="mock", critic="mock", judge="mock")).snapshot()
+        del snap["config"]["options"]
+        self.assertEqual(Debate.from_snapshot(snap).config.options, {})
+
+
 class CliBackendTests(unittest.TestCase):
     def test_claude_argv_and_stdin(self):
         done = mock.Mock(returncode=0, stdout=" answer \n", stderr="")
@@ -187,6 +238,17 @@ class CliBackendTests(unittest.TestCase):
         self.assertEqual(kwargs["input"], "PROMPT")
         self.assertEqual(kwargs["timeout"], 42)
         self.assertNotIn("shell", kwargs)
+
+    def test_claude_seat_model_and_effort_in_argv(self):
+        done = mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch("backends.subprocess.run", return_value=done) as run:
+            ClaudeBackend(model="sonnet").complete(TurnRequest("judge", 2, "P", model="opus", effort="xhigh"))
+        self.assertEqual(run.call_args[0][0], ["claude", "--print", "--setting-sources", "project", "--tools", "",
+                                               "--strict-mcp-config", "--model", "opus", "--effort", "xhigh"])
+
+    def test_claude_without_seat_options_keeps_default_argv(self):
+        self.assertEqual(ClaudeBackend().build_argv(), ["claude", "--print", "--setting-sources", "project",
+                                                        "--tools", "", "--strict-mcp-config"])
 
     def test_claude_nonzero_exit_raises(self):
         done = mock.Mock(returncode=2, stdout="", stderr="auth failed")
@@ -214,6 +276,12 @@ class CliBackendTests(unittest.TestCase):
         self.assertEqual(argv[:5], ["codex", "exec", "--json", "-m", "m1"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertEqual(argv[-1], "-")
+
+    def test_codex_effort_in_argv(self):
+        argv = CodexBackend(model="codex-auto-review").build_argv("/s", "/o", effort="high")
+        self.assertEqual(argv[:7], ["codex", "exec", "--json", "-m", "codex-auto-review",
+                                    "-c", "model_reasoning_effort=high"])
+        self.assertNotIn("-c", CodexBackend().build_argv("/s", "/o"))
 
     def test_codex_failure_surfaces_typed_jsonl_error(self):
         api_err = json.dumps({"type": "error", "error": {"message": "model not supported", "code": "model_not_found"}})
