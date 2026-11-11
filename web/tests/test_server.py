@@ -265,6 +265,73 @@ class ProxiedAuthServerTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/", headers=me)[0].status, 200)
 
 
+class LlmAuthRouteTests(unittest.TestCase):
+    """/api/auth routes: HTTPS gate, exact AuthManager calls, typed errors mapped to status codes."""
+
+    def setUp(self):
+        from auth import AuthManager
+        from server import parse_trusted_proxies
+        self.runs = tempfile.TemporaryDirectory()
+        self.llm = mock.create_autospec(AuthManager, instance=True)
+        self.app = App({"mock": MockBackend()}, self.runs.name, llm_auth=self.llm,
+                       trusted_proxies=parse_trusted_proxies(["127.0.0.1/32"]))
+        self.server = make_server(self.app, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    tearDown = ServerTests.tearDown
+    request = ServerTests.request
+    HTTPS = {"X-Forwarded-Proto": "https", "X-Forwarded-For": "198.51.100.7"}
+
+    def test_actions_refused_without_https(self):
+        for headers in ({}, {"X-Forwarded-Proto": "http"}, {"X-Forwarded-For": "198.51.100.7"}):
+            resp, raw = self.request("POST", "/api/auth/claude/login", {}, headers=headers)
+            self.assertEqual(resp.status, 403, (headers, raw))
+        self.llm.start_login.assert_not_called()
+
+    def test_login_over_https_calls_manager_once(self):
+        self.llm.start_login.return_value = {"state": "awaiting_user", "url": "https://claude.com/x",
+                                             "user_code": None, "error": None}
+        resp, raw = self.request("POST", "/api/auth/claude/login", {}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 200, raw)
+        self.assertEqual(json.loads(raw)["url"], "https://claude.com/x")
+        self.llm.start_login.assert_called_once_with("claude")
+
+    def test_code_is_forwarded_exactly(self):
+        self.llm.submit_code.return_value = {"state": "verifying", "url": None, "user_code": None, "error": None}
+        resp, _ = self.request("POST", "/api/auth/claude/code", {"code": "abc#def"}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 200)
+        self.llm.submit_code.assert_called_once_with("claude", "abc#def")
+
+    def test_typed_errors_map_to_status(self):
+        from auth import InvalidAuthCode, NoLoginInProgress, UnknownProvider
+        cases = [(UnknownProvider("x"), 404), (NoLoginInProgress("claude"), 409),
+                 (InvalidAuthCode("code looks wrong"), 400)]
+        for exc, status in cases:
+            self.llm.submit_code.side_effect = exc
+            resp, raw = self.request("POST", "/api/auth/claude/code", {"code": "c"}, headers=self.HTTPS)
+            self.assertEqual(resp.status, status, raw)
+
+    def test_logout_and_cancel(self):
+        from auth import AuthStatus
+        self.llm.logout.return_value = AuthStatus(False)
+        resp, raw = self.request("POST", "/api/auth/codex/logout", {}, headers=self.HTTPS)
+        self.assertEqual((resp.status, json.loads(raw)), (200, {"logged_in": False}))
+        self.llm.logout.assert_called_once_with("codex")
+        resp, _ = self.request("POST", "/api/auth/codex/cancel", {}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 200)
+        self.llm.cancel.assert_called_once_with("codex")
+
+    def test_overview_is_readable_without_https_gate(self):
+        self.llm.overview.return_value = {"claude": {"logged_in": True}}
+        resp, raw = self.request("GET", "/api/auth")
+        self.assertEqual((resp.status, json.loads(raw)), (200, {"claude": {"logged_in": True}}))
+
+    def test_unknown_action_is_404(self):
+        resp, _ = self.request("POST", "/api/auth/claude/hack", {}, headers=self.HTTPS)
+        self.assertEqual(resp.status, 404)
+
+
 class BasicAuthConfigTests(unittest.TestCase):
     def test_rejects_short_password_and_empty_user(self):
         from server import BasicAuth

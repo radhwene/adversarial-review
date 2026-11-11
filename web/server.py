@@ -34,6 +34,7 @@ from typing import Dict, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from auth import AuthManager, InvalidAuthCode, NoLoginInProgress, UnknownProvider  # noqa: E402
 from backends import DEFAULT_TIMEOUT_SECONDS, Backend, build_registry  # noqa: E402
 from engine import Debate, DebateConfig, DebateRunner, InvalidDebateConfig  # noqa: E402
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
@@ -84,6 +85,8 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _EVENTS_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/events$")
 _DEBATE_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})$")
 _PROJECT_DEBATES_PATH = re.compile(r"^/api/projects/([^/]+)/debates$")
+_AUTH_ACTION_PATH = re.compile(r"^/api/auth/([a-z]+)/(login|code|logout|cancel)$")
+FORWARDED_PROTO_HEADER = "X-Forwarded-Proto"
 
 
 class BasicAuth:
@@ -140,8 +143,10 @@ class App:
     def __init__(self, registry: Dict[str, Backend], runs_dir: Optional[str],
                  max_active: int = MAX_ACTIVE_DEBATES, auth: Optional[BasicAuth] = None,
                  projects: Optional[ProjectStore] = None,
-                 trusted_proxies: Tuple[IpNetwork, ...] = ()) -> None:
+                 trusted_proxies: Tuple[IpNetwork, ...] = (),
+                 llm_auth: Optional[AuthManager] = None) -> None:
         self.registry = registry
+        self.llm_auth = llm_auth
         self.auth = auth
         self.trusted_proxies = trusted_proxies
         self.projects = projects
@@ -239,6 +244,13 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             return client_ip(self.client_address[0], self.headers.get(FORWARDED_FOR_HEADER),
                              app.trusted_proxies)
 
+        def _secure_transport(self) -> bool:
+            """OAuth codes may only travel over TLS: via a trusted proxy that saw https, or loopback."""
+            peer = ipaddress.ip_address(self.client_address[0])
+            if any(peer in net for net in app.trusted_proxies):
+                return (self.headers.get(FORWARDED_PROTO_HEADER) or "").strip().lower() == "https"
+            return peer.is_loopback and not self.headers.get(FORWARDED_FOR_HEADER)
+
         def log_message(self, fmt, *args):  # route http.server logs to logging
             ip = self._client_ip() if getattr(self, "headers", None) is not None else self.address_string()
             logger.info("%s %s", ip, fmt % args)
@@ -272,6 +284,9 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                                  "script-src 'self' 'unsafe-inline'; connect-src 'self'")
                 self.end_headers()
                 self.wfile.write(body)
+                return
+            if path == "/api/auth" and app.llm_auth is not None:
+                self._json(HTTPStatus.OK, app.llm_auth.overview())
                 return
             if path == "/api/backends":
                 self._json(HTTPStatus.OK, {name: {"available": b.available()} for name, b in app.registry.items()})
@@ -326,6 +341,10 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if self.path == "/api/projects" and app.projects is not None:
                 self._create_project()
                 return
+            m = _AUTH_ACTION_PATH.match(self.path)
+            if m and app.llm_auth is not None:
+                self._auth_action(m.group(1), m.group(2))
+                return
             if self.path != "/api/debates":
                 self._error(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -356,6 +375,38 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             logger.info("debate=%s started project=%s proposer=%s critic=%s judge=%s rounds=%d", debate.id,
                         config.project, config.proposer, config.critic, config.judge, config.max_rounds)
             self._json(HTTPStatus.ACCEPTED, {"id": debate.id})
+
+        def _auth_action(self, provider: str, action: str) -> None:
+            if not self._secure_transport():
+                self._error(HTTPStatus.FORBIDDEN, "LLM sign-in requires HTTPS")
+                return
+            body = self._read_json_body()
+            if body is None:
+                return
+            try:
+                if action == "login":
+                    result = app.llm_auth.start_login(provider)
+                elif action == "code":
+                    result = app.llm_auth.submit_code(provider, str(body.get("code", "")))
+                elif action == "cancel":
+                    app.llm_auth.cancel(provider)
+                    result = {"state": "cancelled"}
+                else:
+                    st = app.llm_auth.logout(provider)
+                    result = {"logged_in": st.logged_in}
+            except UnknownProvider:
+                self._error(HTTPStatus.NOT_FOUND, "unknown provider")
+                return
+            except NoLoginInProgress:
+                self._error(HTTPStatus.CONFLICT, "no sign-in waiting for a code: start again")
+                return
+            except InvalidAuthCode as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except FileNotFoundError:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, f"{provider} CLI not installed")
+                return
+            self._json(HTTPStatus.OK, result)
 
         def _create_project(self) -> None:
             body = self._read_json_body()
@@ -445,7 +496,8 @@ def main(argv=None) -> None:
                               deepseek_model=args.deepseek_model)
     projects = ProjectStore(args.projects_dir)
     projects.create(DEFAULT_PROJECT)
-    server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies),
+    server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies,
+                             llm_auth=AuthManager()),
                          args.host, args.port)
     logger.info("projects: %s", projects.root)
     logger.info("auth: %s", "HTTP Basic enabled" if auth else "disabled (loopback only)")
