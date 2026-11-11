@@ -1,4 +1,4 @@
-"""Projects (~/lldebat/<name>/) + FADO.csv trace, through the real HTTP server."""
+"""Projects (~/lldebat/<name>/) + trace-debat.csv trace, through the real HTTP server."""
 from __future__ import annotations
 
 import csv
@@ -13,7 +13,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backends import MockBackend  # noqa: E402
-from projects import FADO_COLUMNS, InvalidProjectName, ProjectStore, fado_row  # noqa: E402
+from projects import (TRACE_COLUMNS, InvalidProjectName, ProjectStore, TraceHeaderMismatch,  # noqa: E402
+                      trace_row)
 from server import App, make_server  # noqa: E402
 
 
@@ -28,8 +29,8 @@ class ProjectStoreTests(unittest.TestCase):
     def test_create_makes_folder_and_csv_header(self):
         self.assertTrue(self.store.create("alpha"))
         self.assertFalse(self.store.create("alpha"))  # idempotent
-        with open(os.path.join(self.tmp.name, "alpha", "FADO.csv"), newline="") as fh:
-            self.assertEqual(list(csv.reader(fh)), [FADO_COLUMNS])
+        with open(os.path.join(self.tmp.name, "alpha", "trace-debat.csv"), newline="") as fh:
+            self.assertEqual(list(csv.reader(fh)), [TRACE_COLUMNS])
         self.assertEqual(self.store.list(), [{"name": "alpha", "debates": 0}])
 
     def test_rejects_traversal_and_bad_names(self):
@@ -39,12 +40,64 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.tmp.name), [])
 
     def test_csv_cells_neutralise_spreadsheet_formulas(self):
-        row = fado_row("p", "0123456789ab", "q", {"seq": 1, "type": "turn_completed", "ts": 0,
+        row = trace_row("p", "0123456789ab", "duel", "q", {"seq": 1, "type": "turn_completed", "ts": 0,
                                                   "turn": {"role": "critic", "agent": "mock", "round": 1,
                                                            "content": "=HYPERLINK(\"x\")", "status": None,
                                                            "duration_s": 1.5}})
-        self.assertEqual(row[FADO_COLUMNS.index("content")], "'=HYPERLINK(\"x\")")
-        self.assertEqual(row[FADO_COLUMNS.index("role")], "critic")
+        self.assertEqual(row[TRACE_COLUMNS.index("content")], "'=HYPERLINK(\"x\")")
+        self.assertEqual(row[TRACE_COLUMNS.index("role")], "critic")
+        self.assertEqual(row[TRACE_COLUMNS.index("algorithm")], "duel")
+        self.assertEqual(row[TRACE_COLUMNS.index("seat")], "")
+
+
+LEGACY_HEADER = ["timestamp", "project", "debate_id", "seq", "event", "role", "agent", "round",
+                 "question", "status", "duration_s", "content"]
+
+
+class LegacyTraceMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def legacy(self, name, rows):
+        os.makedirs(os.path.join(self.tmp.name, name, "debates"))
+        path = os.path.join(self.tmp.name, name, "FADO.csv")
+        with open(path, "w", newline="") as fh:
+            csv.writer(fh).writerows([LEGACY_HEADER] + rows)
+        return path
+
+    def test_header_only_legacy_file_is_replaced_in_every_project(self):
+        a, b = self.legacy("a", []), self.legacy("b", [])
+        store = ProjectStore(self.tmp.name)
+        self.assertFalse(os.path.exists(a) or os.path.exists(b))
+        store.create("a")
+        with open(os.path.join(self.tmp.name, "a", "trace-debat.csv"), newline="") as fh:
+            self.assertEqual(list(csv.reader(fh)), [TRACE_COLUMNS])
+
+    def test_legacy_file_with_data_is_kept_and_fresh_trace_started(self):
+        data = [["t", "a", "id", "1", "debate_started", "", "", "", "q", "", "", ""]]
+        legacy = self.legacy("a", data)
+        store = ProjectStore(self.tmp.name)
+        store.append_event("a", "0123456789ab", "duel", "q", {"seq": 1, "type": "debate_started", "ts": 0})
+        with open(legacy, newline="") as fh:
+            self.assertEqual(list(csv.reader(fh)), [LEGACY_HEADER] + data)  # untouched
+        with open(os.path.join(self.tmp.name, "a", "trace-debat.csv"), newline="") as fh:
+            rows = list(csv.reader(fh))
+        self.assertEqual(rows[0], TRACE_COLUMNS)
+        self.assertEqual(len(rows), 2)
+
+    def test_append_refuses_trace_with_foreign_header(self):
+        os.makedirs(os.path.join(self.tmp.name, "a", "debates"))
+        path = os.path.join(self.tmp.name, "a", "trace-debat.csv")
+        with open(path, "w", newline="") as fh:
+            csv.writer(fh).writerow(LEGACY_HEADER)
+        store = ProjectStore(self.tmp.name)
+        with self.assertRaises(TraceHeaderMismatch):
+            store.append_event("a", "0123456789ab", "duel", "q", {"seq": 1, "type": "debate_started", "ts": 0})
+        with open(path, newline="") as fh:
+            self.assertEqual(list(csv.reader(fh)), [LEGACY_HEADER])  # nothing appended
 
 
 class ProjectHttpTests(unittest.TestCase):
@@ -84,23 +137,24 @@ class ProjectHttpTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/projects", {"name": "math"})[0].status, 200)
         debate_id = self.run_debate("math")
 
-        with open(os.path.join(self.tmp.name, "math", "FADO.csv"), newline="", encoding="utf-8") as fh:
+        with open(os.path.join(self.tmp.name, "math", "trace-debat.csv"), newline="", encoding="utf-8") as fh:
             rows = list(csv.DictReader(fh))
         self.assertEqual([r["event"] for r in rows], [
             "debate_started", "turn_started", "turn_completed", "turn_started", "turn_completed",
             "turn_started", "turn_completed", "turn_started", "turn_completed", "converged",
             "turn_started", "turn_completed", "debate_completed"])
         self.assertEqual({r["debate_id"] for r in rows}, {debate_id})
+        self.assertEqual({r["algorithm"] for r in rows}, {"duel"})
         self.assertEqual(rows[0]["question"], "Q=1?")
         self.assertTrue(rows[2]["content"])  # proposer opening text is in the trace
         self.assertEqual(json.loads(rows[-2]["status"])["WINNER"], "draw")  # MockBackend judge
         # default project untouched
-        with open(os.path.join(self.tmp.name, "default", "FADO.csv"), newline="") as fh:
+        with open(os.path.join(self.tmp.name, "default", "trace-debat.csv"), newline="") as fh:
             self.assertEqual(len(list(csv.reader(fh))), 1)
 
     def test_csv_is_append_only_across_debates(self):
         first, second = self.run_debate("default"), self.run_debate("default")
-        with open(os.path.join(self.tmp.name, "default", "FADO.csv"), newline="") as fh:
+        with open(os.path.join(self.tmp.name, "default", "trace-debat.csv"), newline="") as fh:
             ids = [r["debate_id"] for r in csv.DictReader(fh)]
         self.assertEqual(ids.count(first), 13)
         self.assertEqual(ids.count(second), 13)

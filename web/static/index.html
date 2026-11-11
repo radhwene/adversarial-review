@@ -736,7 +736,7 @@ let projectsCache = [];
 function updateDocketSummary() {
   const p = projectsCache.find((x) => x.name === $("project").value);
   $("docket-summary").textContent = p ? "Projet " + p.name + " · " + p.debates + " débat(s)" : "Projet";
-  $("project-path").textContent = p ? "~/lldebat/" + p.name + "/FADO.csv" : "";
+  $("project-path").textContent = p ? "~/lldebat/" + p.name + "/trace-debat.csv" : "";
 }
 
 async function loadProjects(select) {

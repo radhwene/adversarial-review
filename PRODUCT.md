@@ -16,11 +16,11 @@ Adversarial reasoning: one agent proposes, another attacks round after round, a 
 
 ## Positioning
 
-Not a chat app: a structured, traced debate between real agent CLIs (claude, codex) and APIs (DeepSeek), with every event appended to an unlimited local trace (`~/lldebat/<projet>/FADO.csv`).
+Not a chat app: a structured, traced debate between real agent CLIs (claude, codex) and APIs (DeepSeek), with every event appended to an unlimited local trace (`~/lldebat/<projet>/trace-debat.csv`).
 
 ## Operating Context
 
-- Projects = sub-folders of `~/lldebat/`; each has `FADO.csv` (append-only) and `debates/<id>.json` (replayable).
+- Projects = sub-folders of `~/lldebat/`; each has `trace-debat.csv` (append-only) and `debates/<id>.json` (replayable).
 - A real agent turn takes 10–60 s; a debate takes 1–5 min. Live streaming over SSE; reload/`#id` replays the whole debate.
 - Status blocks per turn: proposer CONFIDENCE / CONCEDED / POSITION_CHANGED; critic VERDICT (ACCEPT/CONTEST) / OBJECTIONS; judge WINNER / CONFIDENCE / UNRESOLVED.
 

@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from backends import DEFAULT_TIMEOUT_SECONDS, Backend, build_registry  # noqa: E402
 from engine import Debate, DebateConfig, DebateRunner, InvalidDebateConfig  # noqa: E402
-from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName,  # noqa: E402
+from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
                       ProjectStore, UnknownProject)
 
 logger = logging.getLogger("advr.server")
@@ -143,11 +143,11 @@ class App:
             self.slots.release()
 
     def _trace(self, debate: Debate, event: Dict) -> None:
-        """Append every event to <project>/FADO.csv. A disk error is logged, never fatal to the debate."""
+        """Append every event to <project>/trace-debat.csv. A disk error is logged, never fatal to the debate."""
         try:
-            self.projects.append_event(debate.config.project, debate.id, debate.config.question, event)
-        except (OSError, UnknownProject):
-            logger.exception("debate=%s FADO.csv write failed (event %s)", debate.id, event.get("type"))
+            self.projects.append_event(debate.config.project, debate.id, "duel", debate.config.question, event)
+        except (OSError, UnknownProject, TraceHeaderMismatch):
+            logger.exception("debate=%s trace-debat.csv write failed (event %s)", debate.id, event.get("type"))
         if debate.finished:  # terminal event: save the snapshot before any reader can see the end
             try:
                 self.projects.save_debate(debate.config.project, debate.snapshot())
@@ -385,7 +385,7 @@ def main(argv=None) -> None:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per agent turn")
     parser.add_argument("--mock-delay", type=float, default=0.8, help="simulated latency of the mock backend")
     parser.add_argument("--projects-dir", default=DEFAULT_PROJECTS_ROOT,
-                        help="one sub-folder per project, each with FADO.csv + debates/")
+                        help="one sub-folder per project, each with trace-debat.csv + debates/")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

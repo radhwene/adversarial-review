@@ -27,17 +27,17 @@ DEEPSEEK_API_KEY=sk-... python3 web/server.py --deepseek-model deepseek-reasoner
 python3 web/server.py --projects-dir /data/lldebat
 ```
 
-## Projects and the FADO.csv trace
+## Projects and the trace-debat.csv trace
 
 Each project is a sub-folder of `~/lldebat/` (or `--projects-dir`), created from the UI's "+" button (name: letters, digits, `-`, `_`; max 64).
 
 ```
 ~/lldebat/<project>/
-├── FADO.csv            # append-only, unbounded: one row per event of every debate
+├── trace-debat.csv     # append-only, unbounded: one row per event of every debate
 └── debates/<id>.json   # full replayable transcript (reload /#<id> rebuilds it)
 ```
 
-`FADO.csv` is never truncated or rotated: it is the project's local memory. The `default` project exists out of the box.
+`trace-debat.csv` is never truncated or rotated: it is the project's local memory. The `default` project exists out of the box.
 
 ## UI ("court record" layout)
 
@@ -83,7 +83,7 @@ cd web && python3 -m unittest discover -s tests -v
 ```
 
 - `test_engine.py`: status-block parsing, exact turn order, exact prompt contents per turn, early convergence, missing block, typed backend errors and timeouts, exact CLI argv, codex JSONL error extraction.
-- `test_projects.py`: project name validation, FADO.csv append-only writes, debate JSON persistence and listing.
+- `test_projects.py`: project name validation, trace-debat.csv append-only writes, debate JSON persistence and listing.
 - `test_deepseek.py`: DeepSeek backend against a local fake API server (exact request, HTTP error message, malformed response, timeout, missing key).
 - `test_server.py`: a real HTTP server on an ephemeral port with real SSE parsing. It runs two full debates back to back (anti-flake) and also covers replay from `Last-Event-ID`, 400/404/429, 415 on non-JSON POST, 403 on a foreign `Host`. With auth: 401 challenge, wrong user/password/malformed header, full debate with credentials and any `Host`, CSRF still 415, lockout 429, header-less probes not counted, short password rejected, public bind without auth refused.
 

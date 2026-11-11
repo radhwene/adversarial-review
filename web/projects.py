@@ -2,7 +2,7 @@
 
 Layout::
 
-    ~/lldebat/<project>/FADO.csv            append-only trace of every debate event (never truncated)
+    ~/lldebat/<project>/trace-debat.csv         append-only trace of every debate event (never truncated)
     ~/lldebat/<project>/debates/<id>.json   full snapshot of each debate (turns + events), for replay
 """
 from __future__ import annotations
@@ -15,19 +15,21 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger("advr.projects")
 
 DEFAULT_PROJECTS_ROOT = os.path.expanduser("~/lldebat")
 DEFAULT_PROJECT = "default"
-FADO_FILENAME = "FADO.csv"
+TRACE_FILENAME = "trace-debat.csv"
+# Name used before the rename. A legacy file holding data is kept untouched, never rewritten.
+LEGACY_TRACE_FILENAME = "FADO.csv"
 DEBATES_DIRNAME = "debates"
 # Letters, digits, '-' and '_' only: no '/', no '..', so a name can never escape the root.
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 DEBATE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
-FADO_COLUMNS = ["timestamp", "project", "debate_id", "seq", "event", "role", "agent", "round",
-                "question", "status", "duration_s", "content"]
+TRACE_COLUMNS = ["timestamp", "project", "debate_id", "algorithm", "seq", "event", "role", "seat", "agent",
+                   "round", "question", "status", "duration_s", "content"]
 # Cells starting with these are run as formulas by Excel/LibreOffice (CSV injection, OWASP).
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -40,13 +42,17 @@ class UnknownProject(LookupError):
     pass
 
 
+class TraceHeaderMismatch(RuntimeError):
+    """trace-debat.csv exists with other columns: appending would silently misalign every row."""
+
+
 def _csv_safe(value) -> str:
     text = "" if value is None else str(value)
     return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
 
 
-def fado_row(project: str, debate_id: str, question: str, event: Dict) -> List[str]:
-    """Flatten one engine event into a FADO.csv row (same column order as FADO_COLUMNS)."""
+def trace_row(project: str, debate_id: str, algorithm: str, question: str, event: Dict) -> List[str]:
+    """Flatten one engine event into a trace-debat.csv row (same column order as TRACE_COLUMNS)."""
     turn = event.get("turn") or {}
     status = turn.get("status") if turn else event.get("verdict")
     content = turn.get("content") or event.get("message") or ""
@@ -54,9 +60,11 @@ def fado_row(project: str, debate_id: str, question: str, event: Dict) -> List[s
         "timestamp": datetime.fromtimestamp(event.get("ts", time.time()), timezone.utc).isoformat(),
         "project": project,
         "debate_id": debate_id,
+        "algorithm": algorithm,
         "seq": event.get("seq"),
         "event": event.get("type"),
         "role": turn.get("role") or event.get("role") or "",
+        "seat": turn.get("seat") if turn.get("seat") is not None else "",
         "agent": turn.get("agent") or event.get("agent") or "",
         "round": turn.get("round", event.get("round", "")),
         "question": question if event.get("type") == "debate_started" else "",
@@ -64,16 +72,52 @@ def fado_row(project: str, debate_id: str, question: str, event: Dict) -> List[s
         "duration_s": turn.get("duration_s", ""),
         "content": content,
     }
-    return [_csv_safe(row[c]) for c in FADO_COLUMNS]
+    return [_csv_safe(row[c]) for c in TRACE_COLUMNS]
 
 
 class ProjectStore:
-    """Creates/lists project folders and appends to their FADO.csv (thread-safe)."""
+    """Creates/lists project folders and appends to their trace-debat.csv (thread-safe)."""
 
     def __init__(self, root: str = DEFAULT_PROJECTS_ROOT) -> None:
         self.root = os.path.abspath(root)
         self._lock = threading.Lock()
+        self._checked_traces: Set[str] = set()  # traces whose header already matched TRACE_COLUMNS
         os.makedirs(self.root, exist_ok=True)
+        for name in os.listdir(self.root):
+            if PROJECT_NAME_RE.match(name) and os.path.isdir(os.path.join(self.root, name)):
+                self._migrate_legacy_trace(os.path.join(self.root, name))
+
+    @staticmethod
+    def _migrate_legacy_trace(folder: str) -> None:
+        """FADO.csv -> trace-debat.csv. A header-only legacy file is replaced; one with data is kept as is
+        (its 12 columns cannot be appended to under the new header) and a fresh trace starts."""
+        legacy = os.path.join(folder, LEGACY_TRACE_FILENAME)
+        if not os.path.exists(legacy) or os.path.exists(os.path.join(folder, TRACE_FILENAME)):
+            return
+        with open(legacy, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)
+            has_data = next(reader, None) is not None
+        if has_data:
+            logger.warning("legacy %s kept read-only (has data); new events go to %s",
+                           legacy, TRACE_FILENAME)
+            return
+        os.remove(legacy)
+        logger.info("removed empty legacy %s (replaced by %s)", legacy, TRACE_FILENAME)
+
+    def _ensure_trace(self, path: str) -> None:
+        """Write the header of a new trace, or check an existing one. Caller holds the lock."""
+        if path in self._checked_traces:
+            return
+        if not os.path.exists(path):
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(TRACE_COLUMNS)
+        else:
+            with open(path, newline="", encoding="utf-8") as fh:
+                header = next(csv.reader(fh), None)
+            if header != TRACE_COLUMNS:
+                raise TraceHeaderMismatch(f"{path}: header {header} != {TRACE_COLUMNS}")
+        self._checked_traces.add(path)
 
     @staticmethod
     def validate_name(name: str) -> str:
@@ -88,15 +132,13 @@ class ProjectStore:
         return os.path.isdir(self.path(name))
 
     def create(self, name: str) -> bool:
-        """Create the project folder and its CSV header. Returns False if it already existed."""
+        """Create the project folder and its trace header. Returns False if it already existed."""
         path = self.path(name)
         with self._lock:
             existed = os.path.isdir(path)
             os.makedirs(os.path.join(path, DEBATES_DIRNAME), exist_ok=True)
-            fado = os.path.join(path, FADO_FILENAME)
-            if not os.path.exists(fado):
-                with open(fado, "w", newline="", encoding="utf-8") as fh:
-                    csv.writer(fh).writerow(FADO_COLUMNS)
+            self._migrate_legacy_trace(path)
+            self._ensure_trace(os.path.join(path, TRACE_FILENAME))
         if not existed:
             logger.info("project created: %s", path)
         return not existed
@@ -108,13 +150,15 @@ class ProjectStore:
                 out.append({"name": name, "debates": len(self.debate_summaries(name))})
         return out
 
-    def append_event(self, project: str, debate_id: str, question: str, event: Dict) -> None:
+    def append_event(self, project: str, debate_id: str, algorithm: str, question: str, event: Dict) -> None:
         if not self.exists(project):
             raise UnknownProject(project)
-        row = fado_row(project, debate_id, question, event)
-        with self._lock, open(os.path.join(self.path(project), FADO_FILENAME), "a",
-                              newline="", encoding="utf-8") as fh:
-            csv.writer(fh).writerow(row)
+        row = trace_row(project, debate_id, algorithm, question, event)
+        path = os.path.join(self.path(project), TRACE_FILENAME)
+        with self._lock:
+            self._ensure_trace(path)
+            with open(path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(row)
 
     def save_debate(self, project: str, snapshot: Dict) -> str:
         path = os.path.join(self.path(project), DEBATES_DIRNAME, f"{snapshot['id']}.json")

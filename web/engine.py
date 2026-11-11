@@ -111,7 +111,7 @@ class Debate:
     turns: List[Turn] = field(default_factory=list)
     events: List[Dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
-    # called with each new event under the lock, before readers wake (e.g. the FADO.csv trace)
+    # called with each new event under the lock, before readers wake (e.g. the trace-debat.csv trace)
     observers: List[Callable[["Debate", Dict], None]] = field(default_factory=list, repr=False)
     _cond: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
