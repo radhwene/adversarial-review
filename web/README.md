@@ -42,6 +42,26 @@ docker compose up -d --build
 - `~/lldebat` is bind-mounted on `/data/lldebat`.
 - Root filesystem read-only, all capabilities dropped, `no-new-privileges`.
 
+### HTTPS through the lab Caddy
+
+The shared lab proxy (`/srv/lab-proxy`, host network) terminates TLS on port **8444** and forwards
+to `127.0.0.1:8765`. Block appended to `/srv/lab-proxy/Caddyfile`:
+
+```
+{$LAB_PUBLIC_HOST}:{$LAB_LLDEBAT_PUBLIC_PORT:8444} {
+	tls { issuer acme { disable_http_challenge } }
+	header { Strict-Transport-Security "max-age=31536000"  -Server }
+	# no `encode`: compression buffers and would delay the SSE stream
+	reverse_proxy {$LAB_LLDEBAT_UPSTREAM:127.0.0.1:8765}
+}
+```
+
+- The Caddyfile is a single-file bind mount: edit it in place, then `docker exec lab-proxy-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
+- Caddy reaches the container through the compose gateway `10.203.65.1`. That address is the only
+  `--trusted-proxy`, so the login lockout keys on the real client from `X-Forwarded-For`.
+- Verified 2026-11-11: 401 without credentials, 200 with them, a valid certificate, a full SSE debate
+  streamed through the proxy, and port 8765 unreachable from outside.
+
 ## Projects and the trace-debat.csv trace
 
 Each project is a sub-folder of `~/lldebat/` (or `--projects-dir`), created from the UI's "+" button (name: letters, digits, `-`, `_`; max 64).
