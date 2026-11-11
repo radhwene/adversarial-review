@@ -138,6 +138,22 @@ kbd { font: var(--fs-eyebrow)/1 var(--mono); padding: 2px var(--space-1); border
 .np-err { margin-top: var(--space-2); color: var(--alerte); font-size: var(--fs-sm); }
 .path { margin-top: var(--space-2); font: var(--fs-eyebrow)/1.4 var(--mono); color: var(--encre-3); overflow-wrap: anywhere; }
 .docket { display: flex; flex-direction: column; gap: 2px; margin-top: var(--space-2); }
+
+/* LLM accounts */
+.acct { padding: var(--space-3); background: var(--surface); border: 1px solid var(--filet); border-radius: var(--rayon); }
+.acct-head { display: flex; align-items: center; gap: var(--space-2); min-height: var(--tap); }
+.acct-head b { font-size: var(--fs-sm); }
+.acct-head .st { margin-left: auto; color: var(--encre-3); }
+.acct-head .st.ok { color: var(--succes); } .acct-head .st.warn { color: var(--alerte); }
+.acct-step { margin: var(--space-2) 0 0; font-size: var(--fs-sm); color: var(--encre-2); }
+.acct-step ol { margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }
+.acct a.btn { text-decoration: none; color: var(--accent); width: 100%; }
+.devcode { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3);
+  background: var(--code); border-radius: var(--rayon); font: 700 var(--fs-lg)/1.2 var(--mono); letter-spacing: .08em; user-select: all; }
+.acct form { display: flex; flex-direction: column; gap: var(--space-2); }
+.acct .err { color: var(--alerte); font-size: var(--fs-sm); margin-top: var(--space-2); }
+.acct .row { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.acct .row .btn { flex: 1; }
 .docket a { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--rayon); color: var(--encre); text-decoration: none; transition: background var(--t-fast); }
 .docket a:hover { background: color-mix(in srgb, var(--surface) 70%, transparent); }
 .docket a.current { background: var(--surface); box-shadow: var(--ombre-douce); }
@@ -333,6 +349,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         <label class="sr-only" for="history-filter">Filtrer les débats</label>
         <input class="field" type="search" id="history-filter" placeholder="Filtrer par question ou agent…" autocomplete="off">
         <nav class="docket" id="history" aria-labelledby="history-title"></nav>
+      </section>
+      <section>
+        <h2 class="rail-title" id="acc-title">Comptes LLM</h2>
+        <div class="stack-2" id="accounts" role="group" aria-labelledby="acc-title" aria-live="polite">Chargement…</div>
       </section>
     </div>
   </aside>
@@ -718,9 +738,90 @@ async function loadBackends() {
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
-    const s = el("span"); s.title = backends[n].available ? n + " disponible" : n + " non configuré";
+    const s = el("span"); s.dataset.name = n; s.title = backends[n].available ? n + " disponible" : n + " non configuré";
     s.append(el("i", "dot" + (backends[n].available ? "" : " off")), n); box.append(s);
   }
+}
+
+// ---------- LLM accounts (subscription sign-in, never API billing) ----------
+const AUTH_POLL_MS = 2000;
+const AUTH_LABEL = { claude: "Claude", codex: "Codex (ChatGPT)" };
+const LOGIN_ACTIVE = new Set(["starting", "awaiting_user", "verifying"]);
+let authTimer = null;
+const authDraft = {};  // pasted code survives the 2 s re-render even when the input lost focus
+
+async function authPost(provider, action, body) {
+  const res = await fetch(`/api/auth/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  let data = {}; try { data = await res.json(); } catch (_) { /* empty body */ }
+  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  return data;
+}
+
+function accountCard(name, a) {
+  const card = el("div", "acct"); const head = el("div", "acct-head");
+  const login = a.login && LOGIN_ACTIVE.has(a.login.state) ? a.login : null;
+  const stLabel = a.logged_in ? (a.account === "api_billing" ? "API payante" : "Connecté") : login ? "Connexion…" : "Non connecté";
+  head.append(el("i", "dot" + (a.logged_in ? "" : " off")), el("b", null, AUTH_LABEL[name] || name),
+              el("span", "st" + (a.logged_in ? (a.account === "api_billing" ? " warn" : " ok") : ""), stLabel));
+  card.append(head);
+  const act = (label, cls, fn) => { const b = el("button", "btn " + cls, label); b.type = "button";
+    b.addEventListener("click", async () => { b.disabled = true; try { await fn(); } catch (ex) { showErr(ex.message); } refreshAuth(); }); return b; };
+  const showErr = (msg) => { card.querySelector(".err")?.remove(); card.append(el("div", "err", msg)); };
+
+  if (a.logged_in) {
+    if (a.account === "api_billing") card.append(el("p", "acct-step", "Ce compte facture à l'appel. Déconnecte-le puis reconnecte avec ton abonnement."));
+    const row = el("div", "row"); row.append(act("Déconnecter", "ghost", () => authPost(name, "logout"))); card.append(row);
+  } else if (!login) {
+    const row = el("div", "row"); row.append(act("Connecter " + (AUTH_LABEL[name] || name), "", () => authPost(name, "login"))); card.append(row);
+    if (a.login?.error) showErr(a.login.error);
+  } else if (!login.url) {
+    card.append(el("p", "acct-step", "Démarrage de la connexion…"));
+  } else {
+    const steps = el("div", "acct-step"); const ol = el("ol");
+    const link = el("a", "btn", "Ouvrir la page de connexion ↗"); link.href = login.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+    const li1 = el("li"); li1.append(link); ol.append(li1);
+    if (a.takes_code) {
+      const li2 = el("li", null, "Connecte-toi, copie le code affiché, colle-le ici :");
+      const f = el("form"); f.autocomplete = "off";
+      const inp = el("input", "field"); inp.type = "text"; inp.id = "code-" + name; inp.required = true; inp.spellcheck = false;
+      inp.setAttribute("autocapitalize", "off"); inp.setAttribute("aria-label", "Code de connexion " + (AUTH_LABEL[name] || name));
+      const ok = el("button", "btn primary", login.state === "verifying" ? "Vérification…" : "Valider le code"); ok.type = "submit";
+      inp.value = authDraft[name] || ""; inp.addEventListener("input", () => { authDraft[name] = inp.value; });
+      if (login.state === "verifying") { inp.disabled = true; ok.disabled = true; }
+      f.append(inp, ok);
+      f.addEventListener("submit", async (e) => { e.preventDefault(); ok.disabled = true;
+        try { await authPost(name, "code", { code: inp.value }); } catch (ex) { ok.disabled = false; showErr(ex.message); return; }
+        delete authDraft[name]; refreshAuth(); });
+      li2.append(f); ol.append(li2);
+    } else {
+      const li2 = el("li", null, "Entre ce code sur la page (valable 15 min) :");
+      const code = el("div", "devcode"); code.append(el("span", null, login.user_code || "…"));
+      const cp = el("button", "btn icon ghost"); cp.type = "button"; cp.setAttribute("aria-label", "Copier le code"); cp.append(icon("copy"));
+      cp.addEventListener("click", () => navigator.clipboard?.writeText(login.user_code || ""));
+      code.append(cp); li2.append(code); ol.append(li2);
+      ol.append(el("li", null, "Valide : la connexion se termine toute seule ici."));
+    }
+    steps.append(ol); card.append(steps);
+    const row = el("div", "row"); row.append(act("Annuler", "ghost", () => authPost(name, "cancel"))); card.append(row);
+  }
+  return card;
+}
+
+async function refreshAuth() {
+  clearTimeout(authTimer);
+  const box = $("accounts");
+  let data;
+  try { const res = await fetch("/api/auth"); if (!res.ok) throw new Error("HTTP " + res.status); data = await res.json(); }
+  catch (ex) { box.textContent = "Statut indisponible : " + ex.message; return; }
+  const focusedId = document.activeElement?.id;
+  box.replaceChildren(...Object.entries(data).map(([n, a]) => accountCard(n, a)));
+  if (focusedId && $(focusedId)) $(focusedId).focus();
+  for (const span of $("backend-status").children) {  // header dots: installed AND signed in
+    const n = span.dataset.name; if (!(n in data)) continue;
+    span.firstChild.className = "dot" + (data[n].logged_in ? "" : " off");
+    span.title = n + (data[n].logged_in ? " connecté" : " non connecté : voir Comptes LLM");
+  }
+  if (Object.values(data).some((a) => a.login && LOGIN_ACTIVE.has(a.login.state))) authTimer = setTimeout(refreshAuth, AUTH_POLL_MS);
 }
 
 // ---------- projects & docket ----------
@@ -819,7 +920,7 @@ $("question").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.c
 $("swap").addEventListener("click", () => { const p = $("proposer").value; $("proposer").value = $("critic").value; $("critic").value = p; });
 $("form").addEventListener("submit", start);
 for (const ex of EXAMPLES) { const b = el("button", null, ex); b.type = "button"; b.addEventListener("click", () => { $("question").value = ex; $("question").focus(); }); $("examples").append(b); }
-loadBackends().then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
+loadBackends().then(refreshAuth).then(() => loadProjects()).then(resumeFromHash).catch((err) => { $("backend-status").textContent = "Erreur : " + err.message; });
 </script>
 </body>
 </html>

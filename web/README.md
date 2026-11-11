@@ -62,6 +62,18 @@ to `127.0.0.1:8765`. Block appended to `/srv/lab-proxy/Caddyfile`:
 - Verified 2026-11-11: 401 without credentials, 200 with them, a valid certificate, a full SSE debate
   streamed through the proxy, and port 8765 unreachable from outside.
 
+## LLM accounts (sign in from the UI)
+
+Rail section **Comptes LLM**: one card per CLI with its status (Connecté / Non connecté / ⚠️ API payante).
+
+- **Claude**: "Connecter" spawns `claude auth login --claudeai`. Open the link, sign in, copy the code shown, paste it, then "Valider le code". The code goes to the CLI's stdin and is never logged.
+- **Codex (ChatGPT)**: "Connecter" spawns `codex login --device-auth`. Open the link and enter the one-time code shown in the card (valid 15 min). The card turns "Connecté" on its own.
+- "Annuler" kills a pending login; "Déconnecter" runs the CLI logout. A login left unanswered for 15 min expires.
+- Only subscription flows exist: `--console` and `--with-api-key` (pay-per-use API billing) are never run.
+- Sign-in actions require HTTPS: through the trusted proxy with `X-Forwarded-Proto: https`, or plain loopback. Anything else gets 403.
+- Only `https://` links whose host is `claude.com`/`claude.ai` or `auth.openai.com` are shown, so a CLI line pointing elsewhere is never offered as a link.
+- Logins land in the `llm-auth` volume and survive rebuilds.
+
 ## Projects and the trace-debat.csv trace
 
 Each project is a sub-folder of `~/lldebat/` (or `--projects-dir`), created from the UI's "+" button (name: letters, digits, `-`, `_`; max 64).
@@ -120,7 +132,8 @@ cd web && python3 -m unittest discover -s tests -v
 - `test_engine.py`: status-block parsing, exact turn order, exact prompt contents per turn, early convergence, missing block, typed backend errors and timeouts, exact CLI argv, codex JSONL error extraction.
 - `test_projects.py`: project name validation, trace-debat.csv append-only writes, debate JSON persistence and listing.
 - `test_deepseek.py`: DeepSeek backend against a local fake API server (exact request, HTTP error message, malformed response, timeout, missing key).
-- `test_server.py`: a real HTTP server on an ephemeral port with real SSE parsing. It runs two full debates back to back (anti-flake) and also covers replay from `Last-Event-ID`, 400/404/429, 415 on non-JSON POST, 403 on a foreign `Host`. With auth: 401 challenge, wrong user/password/malformed header, full debate with credentials and any `Host`, CSRF still 415, lockout 429, header-less probes not counted, short password rejected, public bind without auth refused.
+- `test_auth.py`: `AuthManager` against fake claude/codex scripts run as real subprocesses: exact code piped to stdin, lookalike URLs skipped, a wrong code redacted from errors, invalid codes rejected before the CLI, ANSI-wrapped device code, session reuse, expiry kills the CLI, cancel, status parsers (subscription vs API billing).
+- `test_server.py`: a real HTTP server on an ephemeral port with real SSE parsing. It runs two full debates back to back (anti-flake) and also covers replay from `Last-Event-ID`, 400/404/429, 415 on non-JSON POST, 403 on a foreign `Host`. With auth: 401 challenge, wrong user/password/malformed header, full debate with credentials and any `Host`, CSRF still 415, lockout 429, header-less probes not counted, short password rejected, public bind without auth refused. `/api/auth` routes: 403 without HTTPS, exact manager calls, typed errors mapped to 400/404/409/503.
 
 ### Real end-to-end runs (2026-11-10, Claude Code 2.1.322)
 
