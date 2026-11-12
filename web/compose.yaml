@@ -15,7 +15,10 @@ services:
     command: ["python3", "web/server.py", "--host", "0.0.0.0", "--port", "8765",
               "--projects-dir", "/data/lldebat", "--keys-dir", "/data/auth", "--codex-model", "${CODEX_MODEL:-codex-auto-review}",
               # host-side clients (the lab Caddy) reach us through the bridge gateway
-              "--trusted-proxy", "10.203.65.1/32"]
+              "--trusted-proxy", "10.203.65.1/32",
+              # Google answers "IneligibleTierError: UNSUPPORTED_CLIENT" to the Gemini CLI on the
+              # free personal tier (2026-11-12). Remove these two items to bring Gemini back.
+              "--disable-agent", "gemini"]
     volumes:
       - llm-auth:/data/auth          # claude/codex logins + DeepSeek key, survive rebuilds
       - ${LLDEBAT_DIR:-~/lldebat}:/data/lldebat

@@ -80,6 +80,9 @@ Rail section **Comptes LLM**: one card per CLI with its status (Connecté / Non 
 - Only `https://` links whose host is `claude.com`/`claude.ai` or `auth.openai.com` are shown, so a CLI line pointing elsewhere is never offered as a link.
 - Logins land in the `llm-auth` volume and survive rebuilds.
 - **Gemini (Google)**: "Connecter" runs `gemini_auth.py login`, which drives `gemini` under a pseudo-terminal (the CLI refuses its manual Google flow without a TTY). Open the link, sign in with Google, paste the code. Only "Login with Google" is configured; `GEMINI_API_KEY` is never used. Note: on the free personal tier Google may use prompts to improve its models. Gemini records every headless session on disk with no off switch; retention is forced to the minimum, 1 day.
+- ⚠️ **Gemini is disabled** (`--disable-agent gemini` in `compose.yaml`) since 2026-11-12: sign-in works, but every
+  turn fails with `IneligibleTierError ... UNSUPPORTED_CLIENT` (free "Gemini Code Assist for individuals" tier,
+  Google points to Antigravity). Remove the flag once the account is on an eligible tier.
 - **DeepSeek** has no subscription CLI, only a pay-per-use HTTP API. Its card takes an API key (`sk-…`, password field, HTTPS only), stored at `/data/auth/deepseek/api_key` mode 0600 on the `llm-auth` volume. The key is never logged nor sent back: the card shows its last 4 characters. "Supprimer la clé" deletes the file; a `DEEPSEEK_API_KEY` env var stays a fallback the UI cannot remove.
 - ⚠️ **Every DeepSeek turn is billed to the key owner and there is no cost cap yet.** DeepSeek is never a default seat.
 

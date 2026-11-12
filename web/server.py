@@ -35,7 +35,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from api_keys import ApiKeyStore, InvalidApiKey  # noqa: E402
-from auth import AuthManager, InvalidAuthCode, NoLoginInProgress, UnknownProvider  # noqa: E402
+from auth import (DEFAULT_PROVIDERS, AuthManager, InvalidAuthCode, NoLoginInProgress, ProviderSpec,  # noqa: E402
+                  UnknownProvider)
 from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
                       deepseek_key_store)
 from engine import Debate, DebateConfig, DebateRunner, InvalidDebateConfig  # noqa: E402
@@ -514,6 +515,19 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
     return Handler
 
 
+def without_agents(registry: Dict[str, Backend], providers: Dict[str, ProviderSpec],
+                   disabled: List[str]) -> Tuple[Dict[str, Backend], Dict[str, ProviderSpec]]:
+    """Drop agents switched off by the operator (e.g. a provider that refuses this client) from both
+    the debate seats and the Comptes LLM panel. An unknown or required name is a ValueError."""
+    unknown = sorted(set(disabled) - (set(registry) - {"mock"}))
+    if unknown:
+        raise ValueError(f"unknown agent(s) {', '.join(unknown)}; choose from "
+                         f"{', '.join(sorted(set(registry) - {'mock'}))}")
+    gone = set(disabled)
+    return ({n: b for n, b in registry.items() if n not in gone},
+            {n: s for n, s in providers.items() if n not in gone})
+
+
 def make_server(app: App, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
     allowed = LOOPBACK_HOSTS | {host.lower()}
     server = ThreadingHTTPServer((host, port), make_handler(app, frozenset(allowed)))
@@ -531,6 +545,8 @@ def main(argv=None) -> None:
     parser.add_argument("--keys-dir", default=DEFAULT_KEYS_DIR,
                         help="where API keys typed in the UI are stored (one 0600 file per provider)")
     parser.add_argument("--gemini-model", default=None, help="Gemini model alias or id (default: the CLI's own); Login with Google")
+    parser.add_argument("--disable-agent", action="append", default=[], metavar="NAME",
+                        help="hide an agent from the seats and the Comptes LLM panel (repeatable), e.g. gemini")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per agent turn")
     parser.add_argument("--mock-delay", type=float, default=0.8, help="simulated latency of the mock backend")
     parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
@@ -559,10 +575,16 @@ def main(argv=None) -> None:
                               timeout=args.timeout, mock_delay=args.mock_delay,
                               deepseek_model=args.deepseek_model, gemini_model=args.gemini_model,
                               deepseek_keys=deepseek_keys)
+    try:
+        registry, providers = without_agents(registry, DEFAULT_PROVIDERS, args.disable_agent)
+    except ValueError as exc:
+        parser.error(f"--disable-agent: {exc}")
+    if args.disable_agent:
+        logger.info("agents disabled: %s", ", ".join(args.disable_agent))
     projects = ProjectStore(args.projects_dir)
     projects.create(DEFAULT_PROJECT)
     server = make_server(App(registry, None, auth=auth, projects=projects, trusted_proxies=trusted_proxies,
-                             llm_auth=AuthManager(), api_keys={"deepseek": deepseek_keys}),
+                             llm_auth=AuthManager(providers), api_keys={"deepseek": deepseek_keys}),
                          args.host, args.port)
     logger.info("projects: %s", projects.root)
     logger.info("auth: %s", "HTTP Basic enabled" if auth else "disabled (loopback only)")

@@ -471,5 +471,43 @@ class ApiKeyRouteTests(unittest.TestCase):
         self.assertEqual(self.store.get(), "")
 
 
+
+class DisableAgentTests(unittest.TestCase):
+    """--disable-agent: a provider that refuses this client disappears from seats AND the account panel."""
+
+    def test_removes_the_agent_from_seats_and_accounts(self):
+        from auth import DEFAULT_PROVIDERS
+        from server import without_agents
+        registry = {"claude": MockBackend(), "gemini": MockBackend(), "mock": MockBackend()}
+        seats, providers = without_agents(registry, DEFAULT_PROVIDERS, ["gemini"])
+        self.assertEqual(sorted(seats), ["claude", "mock"])
+        self.assertNotIn("gemini", providers)
+        self.assertIn("claude", providers)
+        self.assertIn("gemini", DEFAULT_PROVIDERS)  # the shared default is not mutated
+
+    def test_unknown_or_mock_is_refused(self):
+        from server import without_agents
+        registry = {"claude": MockBackend(), "mock": MockBackend()}
+        for bad in (["gemnii"], ["mock"]):
+            with self.assertRaises(ValueError):
+                without_agents(registry, {}, bad)
+
+    def test_disabled_agent_cannot_take_a_seat(self):
+        from server import without_agents
+        seats, _ = without_agents({"gemini": MockBackend(), "mock": MockBackend()}, {}, ["gemini"])
+        app = App(seats, tempfile.mkdtemp())
+        server = make_server(app, "127.0.0.1", 0)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        conn = __import__("http.client").client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+        conn.request("POST", "/api/debates", json.dumps({"question": "q", "proposer": "gemini", "critic": "mock",
+                                                          "judge": "mock", "max_rounds": 1}),
+                     {"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 400, resp.read())
+        conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
