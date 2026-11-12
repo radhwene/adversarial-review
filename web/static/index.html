@@ -658,7 +658,7 @@ async function start(e) {
   window.scrollTo({ top: 0 });
   let res;
   try {
-    res = await fetch("/api/debates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    res = await fetch("api/debates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   } catch (err) { banner("err", "Serveur injoignable : " + err.message); live = false; setRunning(false); return; }
   const data = await res.json();
   if (!res.ok) { banner("err", data.error || ("HTTP " + res.status)); setState("failed"); live = false; setRunning(false); return; }
@@ -669,7 +669,7 @@ async function start(e) {
 
 // Server replays every event from seq 0, so a reload (or #id link) rebuilds the whole debate.
 function follow(id) {
-  source = new EventSource("/api/debates/" + id + "/events");
+  source = new EventSource("api/debates/" + id + "/events");
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.type === "debate_started") {
@@ -685,7 +685,7 @@ function follow(id) {
 async function resumeFromHash() {
   const id = location.hash.slice(1);
   if (!/^[0-9a-f]{12}$/.test(id)) { showView("form"); markCurrent(); return; }
-  const res = await fetch("/api/debates/" + id);
+  const res = await fetch("api/debates/" + id);
   if (!res.ok) { history.replaceState(null, "", location.pathname); showView("form"); return; }
   const snap = await res.json();
   if (source) { source.close(); source = null; }
@@ -763,7 +763,7 @@ function seatOptions(role) {
 }
 
 async function loadBackends() {
-  const res = await fetch("/api/backends"); backends = await res.json();
+  const res = await fetch("api/backends"); backends = await res.json();
   const names = Object.keys(backends);
   const defaults = { proposer: "claude", critic: "claude", judge: "claude" };
   for (const role of ["proposer", "critic", "judge"]) {
@@ -790,7 +790,7 @@ let authTimer = null;
 const authDraft = {};  // pasted code survives the 2 s re-render even when the input lost focus
 
 async function authPost(provider, action, body) {
-  const res = await fetch(`/api/auth/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const res = await fetch(`api/auth/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   let data = {}; try { data = await res.json(); } catch (_) { /* empty body */ }
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
   return data;
@@ -850,7 +850,7 @@ async function refreshAuth() {
   clearTimeout(authTimer);
   const box = $("accounts");
   let data;
-  try { const res = await fetch("/api/auth"); if (!res.ok) throw new Error("HTTP " + res.status); data = await res.json(); }
+  try { const res = await fetch("api/auth"); if (!res.ok) throw new Error("HTTP " + res.status); data = await res.json(); }
   catch (ex) { box.textContent = "Statut indisponible : " + ex.message; return; }
   const focusedId = document.activeElement?.id;
   box.replaceChildren(...Object.entries(data).map(([n, a]) => accountCard(n, a)));
@@ -867,7 +867,7 @@ async function refreshAuth() {
 const KEY_LABEL = { deepseek: "DeepSeek" };
 
 async function keyPost(provider, action, body) {
-  const res = await fetch(`/api/keys/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const res = await fetch(`api/keys/${provider}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   let data = {}; try { data = await res.json(); } catch (_) { /* empty body */ }
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
   return data;
@@ -906,7 +906,7 @@ function keyCard(name, k) {
 
 async function refreshKeys() {
   const box = $("api-keys");
-  try { const res = await fetch("/api/keys"); if (!res.ok) throw new Error("HTTP " + res.status);
+  try { const res = await fetch("api/keys"); if (!res.ok) throw new Error("HTTP " + res.status);
     box.replaceChildren(...Object.entries(await res.json()).map(([n, k]) => keyCard(n, k))); }
   catch (ex) { box.textContent = "Clés indisponibles : " + ex.message; }
 }
@@ -928,7 +928,7 @@ function updateDocketSummary() {
 }
 
 async function loadProjects(select) {
-  projectsCache = await (await fetch("/api/projects")).json();
+  projectsCache = await (await fetch("api/projects")).json();
   const sel = $("project"); const keep = select || sel.value || localStorageGet("project") || "default";
   sel.replaceChildren();
   for (const p of projectsCache) { const o = el("option", null, p.name + " (" + p.debates + ")"); o.value = p.name; sel.append(o); }
@@ -958,7 +958,7 @@ async function loadHistory() {
   const name = $("project").value;
   updateDocketSummary();
   if (!name) { historyList = []; renderHistory(); return; }
-  const res = await fetch("/api/projects/" + encodeURIComponent(name) + "/debates");
+  const res = await fetch("api/projects/" + encodeURIComponent(name) + "/debates");
   if (!res.ok) return;
   historyList = await res.json();
   const cached = projectsCache.find((x) => x.name === name); if (cached) { cached.debates = historyList.length; updateDocketSummary(); }
@@ -986,7 +986,7 @@ $("np-form").addEventListener("submit", async (e) => {
   const err = $("np-error"); err.hidden = true;
   let res, data;
   try {
-    res = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    res = await fetch("api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
     data = await res.json();
   } catch (ex) { err.textContent = "Serveur injoignable : " + ex.message; err.hidden = false; return; }
   if (!res.ok) { err.textContent = (data.error || "HTTP " + res.status) + ". Lettres, chiffres, - ou _ uniquement."; err.hidden = false; return; }

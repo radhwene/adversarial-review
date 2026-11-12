@@ -44,22 +44,28 @@ docker compose up -d --build
 
 ### HTTPS through the lab Caddy
 
-The shared lab proxy (`/srv/lab-proxy`, host network) terminates TLS on port **8444** and forwards
-to `127.0.0.1:8765`. Block appended to `/srv/lab-proxy/Caddyfile`:
+The shared lab proxy (`/srv/lab-proxy`, host network) serves the app at
+**`https://<lab host>/llmarena/`** (port 443, next to the lab front and Grafana) and forwards to
+`127.0.0.1:8765`. Inside the `{$LAB_PUBLIC_HOST}` site block:
 
 ```
-{$LAB_PUBLIC_HOST}:{$LAB_LLDEBAT_PUBLIC_PORT:8444} {
-	tls { issuer acme { disable_http_challenge } }
-	header { Strict-Transport-Security "max-age=31536000"  -Server }
-	# no `encode`: compression buffers and would delay the SSE stream
+redir /llmarena /llmarena/ 308
+handle_path /llmarena/* {          # strips the prefix: the server still sees /api/...
 	reverse_proxy {$LAB_LLDEBAT_UPSTREAM:127.0.0.1:8765}
 }
 ```
 
+- The page only calls relative URLs (`fetch("api/...")`), so it works under any prefix and on
+  `127.0.0.1:8765` directly. A test fails if an absolute `/api` URL comes back.
+- `encode` moved from the site level into the Grafana and front `handle` blocks: compression would
+  buffer the SSE stream of a debate.
+- The old dedicated port **8444** block is still there (same app, same auth).
 - The Caddyfile is a single-file bind mount: edit it in place, then `docker exec lab-proxy-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
 - Caddy reaches the container through the compose gateway `10.203.65.1`. That address is the only
   `--trusted-proxy`, so the login lockout keys on the real client from `X-Forwarded-For`.
-- Verified 2026-11-11: 401 without credentials, 200 with them, a valid certificate, a full SSE debate
+- Verified 2026-11-12 on `/llmarena/`: 308 from `/llmarena`, 401 without credentials, 200 with them, no
+  `Content-Encoding` on the app, two mock debates streamed to the verdict over SSE.
+- Verified 2026-11-11 (port 8444): 401 without credentials, 200 with them, a valid certificate, a full SSE debate
   streamed through the proxy, and port 8765 unreachable from outside.
 
 ## LLM accounts (sign in from the UI)

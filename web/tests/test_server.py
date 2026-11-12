@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import os
 import sys
 import tempfile
@@ -61,6 +62,12 @@ class ServerTests(unittest.TestCase):
         self.assertIn(b"<title>Adversarial Reasoning</title>", raw)
         resp, raw = self.request("GET", "/api/backends")
         self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
+
+    def test_index_uses_relative_api_urls_so_it_works_under_a_path_prefix(self):
+        # served as https://host/llmarena/ behind Caddy handle_path: "/api/x" would leave the prefix
+        _, raw = self.request("GET", "/")
+        self.assertIsNone(re.search(rb"""["'`(]/api\b""", raw))
+        self.assertIn(b'fetch("api/backends")', raw)
 
     def test_debate_streams_to_completion_twice(self):
         for _ in range(2):  # anti-flake: two full runs in a row
