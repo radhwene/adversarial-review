@@ -59,7 +59,7 @@ class ServerTests(unittest.TestCase):
     def test_index_and_backends(self):
         resp, raw = self.request("GET", "/")
         self.assertEqual(resp.status, 200)
-        self.assertIn(b"<title>Adversarial Reasoning</title>", raw)
+        self.assertIn(b"<title>llmarena</title>", raw)
         resp, raw = self.request("GET", "/api/backends")
         self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
 
