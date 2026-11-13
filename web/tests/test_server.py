@@ -63,6 +63,17 @@ class ServerTests(unittest.TestCase):
         resp, raw = self.request("GET", "/api/backends")
         self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
 
+    def test_favicon_is_the_logo_svg(self):
+        resp, raw = self.request("GET", "/favicon.svg")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Type"), "image/svg+xml")
+        self.assertTrue(raw.startswith(b"<svg"))
+        self.assertIn(b"#059669", raw)  # judge check mark of logo E
+
+    def test_index_links_favicon_relatively(self):
+        _, raw = self.request("GET", "/")
+        self.assertIn(b'<link rel="icon" type="image/svg+xml" href="favicon.svg">', raw)
+
     def test_index_uses_relative_api_urls_so_it_works_under_a_path_prefix(self):
         # served as https://host/llmarena/ behind Caddy handle_path: "/api/x" would leave the prefix
         _, raw = self.request("GET", "/")
@@ -186,6 +197,9 @@ class AuthServerTests(unittest.TestCase):
         resp, _ = self.request("GET", "/")
         self.assertEqual(resp.status, 401)
         self.assertEqual(resp.getheader("WWW-Authenticate"), 'Basic realm="Adversarial Reasoning", charset="UTF-8"')
+
+    def test_favicon_also_requires_credentials(self):
+        self.assertEqual(self.request("GET", "/favicon.svg")[0].status, 401)
 
     def test_wrong_password_and_wrong_user_rejected(self):
         for headers in (self.basic(self.USER, "nope"), self.basic("bob", self.PASSWORD),

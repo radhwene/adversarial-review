@@ -47,6 +47,7 @@ logger = logging.getLogger("advr.server")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_INDEX = os.path.join(HERE, "static", "index.html")
+STATIC_LOGO = os.path.join(HERE, "static", "logo.svg")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_BODY_BYTES = 16 * 1024
@@ -302,6 +303,16 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self.send_header("Content-Security-Policy",
                                  "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                  "script-src 'self' 'unsafe-inline'; connect-src 'self'")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/favicon.svg":
+                with open(STATIC_LOGO, "rb") as fh:
+                    body = fh.read()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "max-age=86400")
                 self.end_headers()
                 self.wfile.write(body)
                 return
