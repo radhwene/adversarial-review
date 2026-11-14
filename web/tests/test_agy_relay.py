@@ -113,6 +113,11 @@ class RunnerTests(RelayTestCase):
         self.assertNotIn(EMAIL, ctx.exception.message)
         self.assertIn("<redacted>", ctx.exception.message)
 
+    def test_denied_tool_calls_are_counted(self):
+        os.environ["FAKE_STDOUT"] = result_line(status="SUCCESS", response="ok",
+                                                denied_actions=[{"action": "read_file"}, {"action": "command"}])
+        self.assertEqual(self.runner().complete("x", "gemini-3.8-flash-low").denied, 2)
+
     def test_empty_response_after_denied_tool(self):
         os.environ["FAKE_STDOUT"] = result_line(status="SUCCESS", response="",
                                                 denied_actions=[{"action": "command"}])
@@ -120,6 +125,7 @@ class RunnerTests(RelayTestCase):
             self.runner().complete("x", "gemini-3.8-flash-low")
         self.assertEqual(ctx.exception.kind, "empty_response")
         self.assertIn("forbidden tool", ctx.exception.message)
+        self.assertEqual(ctx.exception.denied, 1)
 
     def test_missing_result_event_is_protocol_error(self):
         os.environ["FAKE_STDOUT"] = INIT + "not json\n"
@@ -231,11 +237,19 @@ class HttpTests(RelayTestCase):
         self.assertEqual((status, data["error"]["kind"]), (502, "agent_error"))
         self.assertNotIn(EMAIL, json.dumps(data))
 
+    def test_access_log_counts_denied_tools_on_failure(self):
+        os.environ["FAKE_STDOUT"] = result_line(status="SUCCESS", response="",
+                                                denied_actions=[{"action": "read_file"}])
+        with self.assertLogs("agy-relay", level="INFO") as logs:
+            status, _ = self.call("POST", "/complete", {"prompt": "x", "model": "gemini-3.8-flash-low"})
+        self.assertEqual(status, 502)
+        self.assertIn("outcome=empty_response denied=1", logs.output[0])
+
     def test_access_log_has_no_prompt(self):
         with self.assertLogs("agy-relay", level="INFO") as logs:
             self.call("POST", "/complete", {"prompt": "SECRET-PROMPT", "model": "gemini-3.8-flash-low"})
         self.assertEqual(len(logs.output), 1)
-        self.assertIn("outcome=ok", logs.output[0])
+        self.assertIn("outcome=ok denied=0", logs.output[0])
         self.assertNotIn("SECRET-PROMPT", logs.output[0])
 
 

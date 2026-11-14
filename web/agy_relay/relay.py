@@ -85,17 +85,19 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 class AgyFailure(Exception):
     """agy did not produce a usable answer. ``kind`` is one of ERROR_KINDS."""
 
-    def __init__(self, kind: str, message: str):
+    def __init__(self, kind: str, message: str, denied: int = 0):
         assert kind in ERROR_KINDS, kind
         super().__init__(message)
         self.kind = kind
         self.message = message
+        self.denied = denied  # tool calls the permission lock refused before agy gave up
 
 
 @dataclass(frozen=True)
 class AgyAnswer:
     text: str
     usage: dict
+    denied: int = 0  # tool calls agy attempted and the permission lock refused
 
 
 def redact(text: str) -> str:
@@ -129,14 +131,14 @@ def parse_stream(stdout: bytes) -> AgyAnswer:
     if not isinstance(result, dict):
         raise AgyFailure("protocol", "agy ended without a result event")
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    denied = result.get("denied_actions") if isinstance(result.get("denied_actions"), list) else []
     if result.get("status") != "SUCCESS":
         raise AgyFailure("agent_error", redact(str(result.get("error") or "agy reported an error")))
     text = result.get("response")
     if not isinstance(text, str) or not text.strip():
-        denied = result.get("denied_actions") or []
         hint = " (it tried a forbidden tool)" if denied else ""
-        raise AgyFailure("empty_response", f"agy returned no text{hint}")
-    return AgyAnswer(text=text, usage=usage)
+        raise AgyFailure("empty_response", f"agy returned no text{hint}", denied=len(denied))
+    return AgyAnswer(text=text, usage=usage, denied=len(denied))
 
 
 class AgyRunner:
@@ -226,7 +228,7 @@ def make_handler(runner: AgyRunner, token: str):
 
         def do_POST(self):
             started = time.monotonic()
-            model, outcome = "-", "ok"
+            model, outcome, denied = "-", "ok", 0
             try:
                 if self.path != "/complete":
                     raise AgyFailure("bad_request", "not found")
@@ -235,14 +237,15 @@ def make_handler(runner: AgyRunner, token: str):
                     raise AgyFailure("unauthorized", "missing or wrong relay token")
                 prompt, model = self._read_request()
                 answer = runner.complete(prompt, model)
+                denied = answer.denied
                 self._send(HTTPStatus.OK, {"text": answer.text, "usage": answer.usage})
             except AgyFailure as failure:
-                outcome = failure.kind
+                outcome, denied = failure.kind, failure.denied
                 self._fail(failure)
             finally:
                 # Never log the prompt or the answer: they are the operator's debate content.
-                log.info("POST %s model=%s outcome=%s %.1fs", self.path, model, outcome,
-                         time.monotonic() - started)
+                log.info("POST %s model=%s outcome=%s denied=%d %.1fs", self.path, model, outcome,
+                         denied, time.monotonic() - started)
 
         def _read_request(self) -> tuple[str, str]:
             try:
