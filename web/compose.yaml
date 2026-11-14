@@ -29,7 +29,32 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
+  # Antigravity (Gemini) behind a relay: the only container holding the Google token.
+  # No published port; only services on the "agy" network can call it, with AGY_RELAY_TOKEN.
+  agy-relay:
+    build: ./agy_relay
+    image: lldebat-agy-relay:local
+    restart: unless-stopped
+    environment:
+      AGY_RELAY_TOKEN: ${AGY_RELAY_TOKEN:?set AGY_RELAY_TOKEN in web/.env}
+    volumes:
+      - agy-home:/home/agy           # Google OAuth token + agy state; never mount it elsewhere
+    networks: [agy]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
 networks:
+  agy: {}   # needs egress (agy talks to Google), so not "internal"
   default:
     ipam:
       config:
@@ -38,3 +63,4 @@ networks:
 
 volumes:
   llm-auth:
+  agy-home:
