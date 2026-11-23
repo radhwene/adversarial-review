@@ -276,6 +276,13 @@ legend { padding: 0; }
 .turn.user { --c: var(--ink); --w: var(--thesis-wash); --l: var(--thesis-line); align-self: center; max-width: 80%; }
 .turn.user.queued { opacity: .7; }
 .turn.user .turn-body { border-radius: var(--r-lg); white-space: pre-wrap; }
+.modes { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: var(--space-4); border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--sunken); }
+.modes button { min-height: 36px; padding: 0 var(--space-4); border: 0; border-radius: var(--r-pill); background: transparent; color: var(--ink-2); font: inherit; cursor: pointer; }
+.modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.turn.assistant { --c: var(--thesis); align-self: flex-start; }
+.chat-pick { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+.chat-pick .tune { grid-column: 1; }
+.docket-sub { margin: var(--space-4) 0 var(--space-2); font-size: var(--fs-eyebrow); }
 .remark { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
 .remark textarea { min-height: 72px; padding: var(--space-2) var(--space-3); border-radius: var(--r); resize: vertical; line-height: 1.5; }
 .remark .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
@@ -379,6 +386,8 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
       <label class="sr-only" for="history-filter">Filtrer les débats</label>
       <input class="field" type="search" id="history-filter" placeholder="Filtrer par question ou agent…" autocomplete="off">
       <nav class="docket" id="history" aria-labelledby="history-title"></nav>
+      <h3 class="eyebrow docket-sub" id="chats-title">Questions directes</h3>
+      <nav class="docket" id="chat-history" aria-labelledby="chats-title"></nav>
     </section>
     <section class="pane" id="pane-accounts" aria-labelledby="acc-title">
       <div class="pane-head"><h2 class="pane-title" id="acc-title">Comptes LLM</h2></div>
@@ -388,6 +397,10 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
   </aside>
 
   <main id="main" tabindex="-1">
+    <div class="col"><div class="modes" id="modes" role="group" aria-label="Mode">
+      <button type="button" data-mode="form" aria-pressed="true">Débat</button>
+      <button type="button" data-mode="chat" aria-pressed="false">Question directe</button>
+    </div></div>
     <!-- new debate -->
     <section class="col" id="saisine">
       <p class="eyebrow">Nouveau débat</p>
@@ -462,6 +475,26 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
         </div>
       </form>
     </section>
+
+    <!-- direct chat with one agent -->
+    <section class="col" id="chat" hidden>
+      <p class="eyebrow" id="chat-no">Question directe</p>
+      <h1 class="page-title" id="chat-title">Parle à un seul agent</h1>
+      <div class="chat-pick" id="chat-pick">
+        <select class="field" id="chat-agent" aria-label="Agent"></select>
+        <div class="tune" id="chat-agent-tune" hidden><select class="field" id="chat-agent-model" aria-label="Modèle" title="Modèle"></select><select class="field" id="chat-agent-effort" aria-label="Effort de réflexion" title="Effort de réflexion"></select></div>
+      </div>
+      <div class="record" id="chat-log" aria-live="polite"></div>
+      <form class="remark" id="chat-form" autocomplete="off">
+        <label for="chat-text"><b>Ton message</b></label>
+        <textarea class="field" id="chat-text" maxlength="4000" placeholder="Ex. : « Explique-moi les index B-tree. »"></textarea>
+        <div class="row">
+          <small id="chat-hint" aria-live="polite">L'agent garde toute la conversation en mémoire. <kbd>Ctrl</kbd> + <kbd>Entrée</kbd> pour envoyer.</small>
+          <button type="button" class="btn ghost" id="chat-new" hidden>Nouvelle question</button>
+          <button type="submit" class="btn primary" id="chat-send">Envoyer</button>
+        </div>
+      </form>
+    </section>
   </main>
 </div>
 <button type="button" class="btn primary follow" id="follow" hidden><svg class="i" aria-hidden="true"><use href="#i-down"/></svg>Suivre le tour en cours</button>
@@ -475,7 +508,7 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const ROLE_LABEL = { proposer: "Défense", critic: "Attaque", judge: "Juge", user: "Toi" };
+const ROLE_LABEL = { proposer: "Défense", critic: "Attaque", judge: "Juge", user: "Toi", assistant: "Agent" };
 const WINNER_LABEL = { proposer: "Défense", critic: "Attaque", draw: "Match nul" };
 const STATE_LABEL = { running: "en cours", completed: "terminé", failed: "échec" };
 const EXAMPLES = [
@@ -544,6 +577,10 @@ function setTab(tab) {
 
 function showView(name) {
   setTab("arena");
+  if (name !== "chat") closeChatSource();
+  $("chat").hidden = name !== "chat";
+  $("modes").hidden = name === "case";
+  for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === name));
   $("saisine").hidden = name !== "form";
   $("case").hidden = name !== "case";
   $("new-debate").hidden = name !== "case";
@@ -821,6 +858,7 @@ function follow(id, from) {
 
 async function resumeFromHash() {
   const id = location.hash.slice(1);
+  if (/^c-[0-9a-f]{12}$/.test(id)) { if (source) { source.close(); source = null; } live = false; setRunning(false); markCurrent(); await resumeChat(id.slice(2)); return; }
   if (!/^[0-9a-f]{12}$/.test(id)) { showView("form"); markCurrent(); return; }
   const res = await fetch("api/debates/" + id);
   if (!res.ok) { history.replaceState(null, "", location.pathname); showView("form"); return; }
@@ -914,6 +952,13 @@ async function loadBackends() {
     const keepTune = current && current === (pick || "mock") ? seatOptions(role) : undefined;
     sel.value = pick || "mock";
     fillTune(role, keepTune);
+  }
+  {
+    const sel = $("chat-agent"), current = sel.value; sel.replaceChildren();
+    for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
+    const pick = [current, localStorageGet("role-chat-agent"), "claude"].find((n) => n && backends[n]?.available);
+    const keepTune = current && current === (pick || "mock") ? seatOptions("chat-agent") : undefined;
+    sel.value = pick || "mock"; fillTune("chat-agent", keepTune);
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
@@ -1057,7 +1102,7 @@ async function refreshKeys() {
 // ---------- projects & docket ----------
 function markCurrent() {
   const id = location.hash.slice(1);
-  for (const a of $("history").querySelectorAll("a")) {
+  for (const a of document.querySelectorAll("#history a, #chat-history a")) {
     const cur = a.dataset.id === id; a.classList.toggle("current", cur);
     if (cur) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
@@ -1104,8 +1149,139 @@ async function loadHistory() {
   const res = await fetch("api/projects/" + encodeURIComponent(name) + "/debates");
   if (!res.ok) return;
   historyList = await res.json();
+  loadChatHistory(name);
   const cached = projectsCache.find((x) => x.name === name); if (cached) { cached.debates = historyList.length; updateDocketSummary(); }
   renderHistory();
+}
+
+// ---------- direct chat: one agent, the server keeps the memory ----------
+let chatId = null, chatSeq = -1, chatSource = null, chatBusy = false, chatLastText = "", chatTimer = null;
+
+function closeChatSource() { if (chatSource) { chatSource.close(); chatSource = null; } clearInterval(chatTimer); }
+
+function setChatBusy(busy) {
+  chatBusy = busy;
+  $("chat-send").disabled = busy; $("chat-send").textContent = busy ? "Réponse en cours…" : "Envoyer";
+  const locked = busy || chatId !== null;  // agent and options are fixed once the chat exists
+  for (const id of ["chat-agent", "chat-agent-model", "chat-agent-effort"]) $(id).disabled = locked;
+  $("chat-new").hidden = chatId === null || busy;
+  const p = $("chat-pending");
+  if (!busy) { if (p) p.remove(); clearInterval(chatTimer); return; }
+  if (p) return;
+  const card = el("article", "turn pending assistant"); card.id = "chat-pending";
+  card.append(turnHead("assistant", $("chat-agent").value));
+  const w = el("div", "writing stack-2"); w.append(el("i"), el("i"), el("i")); const t = el("span", null, "rédige… 0 s"); w.append(t);
+  const body = el("div", "turn-body"); body.append(w); card.append(body); $("chat-log").append(card);
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const t0 = Date.now(); clearInterval(chatTimer);
+  chatTimer = setInterval(() => { t.textContent = "rédige… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
+}
+
+function addChatTurn(turn) {
+  const user = turn.role === "user";
+  const card = el("article", "turn " + (user ? "user" : "assistant"));
+  const head = turnHead(user ? "user" : "assistant", user ? "" : turn.agent);
+  if (!user) head.append(el("span", "tmeta", turn.duration_s + " s"));
+  card.append(head);
+  const body = el("div", "turn-body");
+  if (user) body.textContent = turn.content; else body.innerHTML = renderMarkdown(turn.content); // escaped in renderMarkdown
+  card.append(body);
+  const p = $("chat-pending"); if (p) p.before(card); else $("chat-log").append(card);
+  if (!user) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function setChatHeader(snapOrCfg, title) {
+  const cfg = snapOrCfg;
+  $("chat-no").textContent = chatId ? "Question directe n° " + chatId : "Question directe";
+  $("chat-title").textContent = title || "Parle à un seul agent";
+  document.title = (title ? title.slice(0, 60) + " · " : "") + "llmarena";
+  if (cfg && cfg.agent && [...$("chat-agent").options].some((o) => o.value === cfg.agent)) {
+    $("chat-agent").value = cfg.agent; fillTune("chat-agent", { model: cfg.model || "", effort: cfg.effort || "" });
+  }
+}
+
+function handleChat(ev) {
+  if (ev.type === "turn_completed") {
+    addChatTurn(ev.turn);
+    if (ev.turn.role !== "user") { closeChatSource(); setChatBusy(false); loadChatHistory($("project").value); }
+  } else if (ev.type === "reply_failed") {
+    closeChatSource(); setChatBusy(false);
+    const users = $("chat-log").querySelectorAll(".turn.user"); users[users.length - 1]?.remove();  // the server dropped it too
+    if (!$("chat-text").value) $("chat-text").value = chatLastText;
+    $("chat-log").append(el("div", "banner err", "Pas de réponse (" + ev.kind + ") : " + ev.message + ". Ton message est remis dans la zone de saisie."));
+  }
+}
+
+// Server closes the stream once the reply has landed; we close first on that event so EventSource never reconnects.
+function followChat(from) {
+  closeChatSource();
+  chatSource = new EventSource("api/chats/" + chatId + "/events?from=" + from);
+  chatSource.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.seq <= chatSeq) return;
+    chatSeq = ev.seq; handleChat(ev);
+  };
+  chatSource.onerror = () => {
+    if (chatSource && chatSource.readyState === EventSource.CLOSED) { closeChatSource(); setChatBusy(false); $("chat-log").append(el("div", "banner err", "Flux SSE interrompu : recharge la page.")); }
+  };
+}
+
+function newChat() {
+  closeChatSource(); chatId = null; chatSeq = -1; chatLastText = "";
+  $("chat-log").replaceChildren(); $("chat-text").value = "";
+  history.replaceState(null, "", location.pathname);
+  setChatHeader(null, ""); setChatBusy(false);
+  showView("chat"); markCurrent(); $("chat-text").focus();
+}
+
+async function resumeChat(id) {
+  const res = await fetch("api/chats/" + id);
+  if (!res.ok) { history.replaceState(null, "", location.pathname); newChat(); return; }
+  const snap = await res.json();
+  closeChatSource(); chatId = snap.id; $("chat-log").replaceChildren();
+  chatSeq = snap.events?.length ? snap.events[snap.events.length - 1].seq : -1;
+  showView("chat"); setChatHeader(snap.config, snap.title);
+  for (const t of snap.turns) addChatTurn(t);
+  setChatBusy(snap.state === "busy");
+  if (snap.state === "busy") followChat(chatSeq + 1);
+  window.scrollTo({ top: document.documentElement.scrollHeight });
+}
+
+async function sendChat(e) {
+  e.preventDefault();
+  const text = $("chat-text").value.trim();
+  if (!text || chatBusy) { $("chat-text").focus(); return; }
+  const first = chatId === null;
+  const body = first ? { agent: $("chat-agent").value, project: $("project").value, text, ...seatOptions("chat-agent") } : { text };
+  $("chat-send").disabled = true;
+  let res, data;
+  try {
+    res = await fetch(first ? "api/chats" : "api/chats/" + chatId + "/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    data = await res.json();
+  } catch (err) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", "Serveur injoignable : " + err.message)); return; }
+  if (!res.ok) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", data.error || ("HTTP " + res.status))); return; }
+  chatLastText = text; $("chat-text").value = "";
+  if (first) { chatId = data.id; history.replaceState(null, "", "#c-" + chatId); setChatHeader(null, text.slice(0, 120)); }
+  setChatBusy(true);
+  followChat(chatSeq + 1);
+}
+
+let chatList = [];
+async function loadChatHistory(project) {
+  if (!project) return;
+  const res = await fetch("api/projects/" + encodeURIComponent(project) + "/chats");
+  if (!res.ok) return;
+  chatList = await res.json();
+  const box = $("chat-history"); box.replaceChildren();
+  for (const c of chatList) {
+    const a = el("a"); a.href = "#c-" + c.id; a.dataset.id = "c-" + c.id;
+    a.append(el("span", "q", c.title || "(sans titre)"));
+    const m = el("span", "m");
+    m.append(el("time", null, fmtDate(c.created_at)), el("span", null, c.agent + (c.model ? " · " + c.model : "")), el("span", null, c.messages + " msg"));
+    a.append(m); box.append(a);
+  }
+  if (!chatList.length) box.append(el("div", "docket-empty", "Aucune question directe dans ce projet."));
+  markCurrent();
 }
 
 function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -1141,6 +1317,16 @@ $("tabbar").addEventListener("click", (e) => {
 // Same hash as the open debate fires no hashchange: still switch the phone to the arena.
 $("history").addEventListener("click", (e) => { if (e.target.closest("a")) setTab("arena"); });
 $("new-debate").addEventListener("click", () => newDebate(null));
+$("chat-history").addEventListener("click", (e) => { if (e.target.closest("a")) setTab("arena"); });
+$("modes").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-mode]"); if (!b) return;
+  if (b.dataset.mode === "chat") { if (chatId) location.hash = "c-" + chatId; else newChat(); } else newDebate(null);
+});
+$("chat-form").addEventListener("submit", sendChat);
+$("chat-new").addEventListener("click", newChat);
+$("chat-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("chat-form").requestSubmit(); } });
+$("chat-agent").addEventListener("change", () => { localStorageSet("role-chat-agent", $("chat-agent").value); fillTune("chat-agent"); });
+for (const key of TUNE_KEYS) $("chat-agent-" + key).addEventListener("change", (e) => localStorageSet(`tune-chat-agent-${$("chat-agent").value}-${key}`, e.target.value));
 $("rerun").addEventListener("click", () => { if (caseCfg) newDebate(caseCfg); });
 $("copy").addEventListener("click", copyTranscript);
 $("follow").addEventListener("click", () => { const n = $("pending") || $("timeline").lastElementChild; n?.scrollIntoView({ behavior: "smooth", block: "nearest" }); $("follow").hidden = true; });
