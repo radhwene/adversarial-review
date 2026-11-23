@@ -40,7 +40,7 @@ class BackendTimeout(BackendError):
 class TurnRequest:
     """Everything a backend needs to produce one debate turn."""
 
-    role: str  # "proposer" | "critic" | "judge"
+    role: str  # "proposer" | "critic" | "judge" | "chat"
     round: int
     prompt: str
     model: Optional[str] = None   # None: the backend's default (its --model flag or the CLI's own)
@@ -276,6 +276,8 @@ class MockBackend(Backend):
                 "---PROPOSER_STATUS---\nCONFIDENCE: 80\nCONCEDED: 1\nPOSITION_CHANGED: true\n"
                 "---END_PROPOSER_STATUS---"
             )
+        if request.role == "chat":
+            return f"**Mock reply #{request.round}.** I read {len(request.prompt)} characters of conversation."
         if request.role == "critic":
             verdict = "CONTEST" if request.round == 1 else "ACCEPT"
             objections = 2 if verdict == "CONTEST" else 0

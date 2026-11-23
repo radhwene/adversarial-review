@@ -109,6 +109,18 @@ class InvalidDebateConfig(ValueError):
     pass
 
 
+def option_error(backend: Backend, key: str, value: object) -> Optional[str]:
+    """Why ``key=value`` is not a valid seat option for ``backend`` (None when it is).
+    Values end up in a CLI argv or an API body: only the backend's own tuples are allowed."""
+    allowed = {"model": backend.models, "effort": backend.efforts}.get(key)
+    if allowed is None:
+        return f": unknown option {key!r}"
+    if value not in allowed:
+        return (f".{key}: {value!r} not offered by {backend.name}"
+                + (f" (choose {', '.join(allowed)})" if allowed else ""))
+    return None
+
+
 @dataclass
 class DebateConfig:
     question: str
@@ -145,12 +157,9 @@ class DebateConfig:
                 raise InvalidDebateConfig(f"options.{role} must be an object")
             backend = registry[getattr(self, role)]
             for key, value in opts.items():
-                allowed = {"model": backend.models, "effort": backend.efforts}.get(key)
-                if allowed is None:
-                    raise InvalidDebateConfig(f"options.{role}: unknown option {key!r}")
-                if value not in allowed:
-                    raise InvalidDebateConfig(f"options.{role}.{key}: {value!r} not offered by {backend.name}"
-                                              + (f" (choose {', '.join(allowed)})" if allowed else ""))
+                error = option_error(backend, key, value)
+                if error:
+                    raise InvalidDebateConfig(f"options.{role}{error}")
 
     def seat(self, role: str, key: str) -> Optional[str]:
         return self.options.get(role, {}).get(key)
