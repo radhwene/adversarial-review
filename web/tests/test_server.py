@@ -686,3 +686,23 @@ class ChatServerTests(unittest.TestCase):
         self.assertTrue(json.loads(raw)["error"].startswith("mock non connecté"), raw)
         self.app.llm_auth.status.assert_called_once_with("mock")
         self.assertEqual(self.backend.prompts, [])
+
+    def test_restart_mid_reply_keeps_message_and_reports_interruption(self):
+        from chat import Chat
+        self.backend.gate.clear()
+        chat_id = self.new_chat("Retiens 42.")
+        snap = self.store.load_chat(chat_id)  # on disk while the agent is still answering
+        self.assertEqual((snap["state"], [t["content"] for t in snap["turns"]]), ("busy", ["Retiens 42."]))
+        # what a restarted server does: reload from disk
+        self.app.chats.clear()
+        reloaded = self.app.get_chat(chat_id)
+        self.assertEqual((reloaded.state, reloaded.turns), ("idle", []))
+        last = reloaded.events[-1]
+        self.assertEqual((last["type"], last["kind"]), ("reply_failed", "interrupted"))
+        self.assertEqual(self.store.load_chat(chat_id)["events"][-1]["seq"], last["seq"])  # persisted, seqs stable
+        # the open page reconnects after the user turn and gets that failure, then the stream closes
+        events = self.read_sse(f"/api/chats/{chat_id}/events?from={last['seq']}")
+        self.assertEqual([e["type"] for e in events], ["reply_failed"])
+        self.assertEqual(Chat.from_snapshot(self.store.load_chat(chat_id)).events[-1]["seq"], last["seq"])
+        self.assertEqual(json.loads(self.request("GET", "/api/projects/default/chats")[1]), [])  # empty chat not listed
+        self.backend.gate.set()

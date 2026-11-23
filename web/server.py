@@ -289,16 +289,19 @@ class App:
             self.slots.release()
 
     def _chat_trace(self, chat: Chat, event: Dict) -> None:
-        """Trace every event; save the snapshot each time the chat goes back to idle."""
+        """Trace and save on every event: a restart mid-reply must find the busy chat (with the user's
+        message) on disk, so reloading it records an "interrupted" failure instead of losing the message."""
         try:
             self.projects.append_event(chat.config.project, chat.id, "chat", "", event)
         except (OSError, UnknownProject, TraceHeaderMismatch):
             logger.exception("chat=%s trace-debat.csv write failed (event %s)", chat.id, event.get("type"))
-        if chat.finished:
-            try:
-                self.projects.save_chat(chat.config.project, chat.snapshot())
-            except OSError:
-                logger.exception("chat=%s could not be saved", chat.id)
+        self._save_chat(chat)
+
+    def _save_chat(self, chat: Chat) -> None:
+        try:
+            self.projects.save_chat(chat.config.project, chat.snapshot())
+        except OSError:
+            logger.exception("chat=%s could not be saved", chat.id)
 
     def get_chat(self, chat_id: str) -> Optional[Chat]:
         """In-memory chat, else a saved one reloaded from its project folder (memory included)."""
@@ -306,8 +309,10 @@ class App:
         if chat is None and self.projects is not None:
             snap = self.projects.load_chat(chat_id)
             if snap is not None:
-                loaded = Chat.from_snapshot(snap)
+                loaded = Chat.from_snapshot(snap)  # a busy snapshot comes back idle + reply_failed "interrupted"
                 loaded.observers.append(self._chat_trace)
+                if snap.get("state") != loaded.state:
+                    self._save_chat(loaded)  # persist that failure so event seqs stay stable across reloads
                 chat = self.chats.setdefault(chat_id, loaded)
         return chat
 

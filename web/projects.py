@@ -208,6 +208,8 @@ class ProjectStore:
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("skipping unreadable chat %s/%s: %s", project, fname, exc)
                 continue
+            if not snap.get("turns"):
+                continue  # first message failed and was handed back: nothing to reopen
             cfg = snap.get("config", {})
             out.append({"id": snap.get("id"), "created_at": snap.get("created_at"), "title": snap.get("title", ""),
                         "agent": cfg.get("agent"), "model": cfg.get("model"), "messages": len(snap.get("turns", []))})
