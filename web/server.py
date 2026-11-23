@@ -13,6 +13,12 @@ Routes:
     GET  /api/projects              projects = sub-folders of --projects-dir (default ~/lldebat)
     POST /api/projects              create one: {"name": ...}
     GET  /api/projects/<name>/debates  saved debates of a project, newest first
+    POST /api/debates/<id>/messages {"text"}  the human's remark (bonus round after the verdict)
+    POST /api/chats {"agent", "model"?, "effort"?, "project"?, "text"}  new chat + first message -> 202 {"id"}
+    POST /api/chats/<id>/messages {"text"}    next message (409 while the agent is answering)
+    GET  /api/chats/<id>            JSON snapshot
+    GET  /api/chats/<id>/events     Server-Sent Events, closes when the reply has landed
+    GET  /api/projects/<name>/chats saved chats of a project, newest first
 """
 from __future__ import annotations
 
@@ -39,8 +45,9 @@ from auth import (DEFAULT_PROVIDERS, AuthManager, InvalidAuthCode, NoLoginInProg
                   UnknownProvider)
 from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
                       deepseek_key_store)
+from chat import Chat, ChatBusy, ChatConfig, ChatRunner, InvalidChatConfig  # noqa: E402
 from engine import (Debate, DebateClosed, DebateConfig, DebateRunner, InvalidDebateConfig,  # noqa: E402
-                    InvalidUserMessage, TooManyUserMessages, clean_user_message)
+                    EventLog, InvalidUserMessage, TooManyUserMessages, clean_user_message)
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
                       ProjectStore, UnknownProject)
 
@@ -91,6 +98,10 @@ _EVENTS_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/events$")
 _DEBATE_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})$")
 _MESSAGES_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/messages$")
 _PROJECT_DEBATES_PATH = re.compile(r"^/api/projects/([^/]+)/debates$")
+_CHAT_EVENTS_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})/events$")
+_CHAT_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})$")
+_CHAT_MESSAGES_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})/messages$")
+_PROJECT_CHATS_PATH = re.compile(r"^/api/projects/([^/]+)/chats$")
 _AUTH_ACTION_PATH = re.compile(r"^/api/auth/([a-z]+)/(login|code|logout|cancel)$")
 _KEY_ACTION_PATH = re.compile(r"^/api/keys/([a-z]+)/(save|clear)$")
 FORWARDED_PROTO_HEADER = "X-Forwarded-Proto"
@@ -161,15 +172,18 @@ class App:
         self.projects = projects
         self.runner = DebateRunner(registry, runs_dir)
         self.debates: Dict[str, Debate] = {}
+        self.chat_runner = ChatRunner(registry)
+        self.chats: Dict[str, Chat] = {}
+        # shared by debates and chat replies: each holds one agent CLI subprocess at a time
         self.slots = threading.BoundedSemaphore(max_active)
 
-    def signed_out_agents(self, config: DebateConfig) -> List[str]:
-        """Seats whose CLI is not logged in. Checked before spawning: an unauthenticated codex falls back
+    def signed_out_agents(self, agents: Sequence[str]) -> List[str]:
+        """Agents whose CLI is not logged in. Checked before spawning: an unauthenticated codex falls back
         to the pay-per-use API and fails with a bare 401 mid-debate."""
         if self.llm_auth is None:
             return []
         out = []
-        for agent in dict.fromkeys((config.proposer, config.critic, config.judge)):
+        for agent in dict.fromkeys(agents):
             try:
                 if not self.llm_auth.status(agent).logged_in:
                     out.append(agent)
@@ -234,6 +248,68 @@ class App:
                 self.projects.save_debate(debate.config.project, debate.snapshot())
             except OSError:
                 logger.exception("debate=%s could not be saved", debate.id)
+
+    def start_chat(self, config: ChatConfig, text: str) -> Chat:
+        """Create a chat and send its first message (no empty chats on disk)."""
+        config.validate(self.registry)
+        if self.projects is not None and not self.projects.exists(ProjectStore.validate_name(config.project)):
+            raise UnknownProject(config.project)
+        text = clean_user_message(text)
+        chat = Chat(config=config)
+        if self.projects is not None:
+            chat.observers.append(self._chat_trace)
+        self.post_chat_message(chat, text)
+        self.chats[chat.id] = chat
+        return chat
+
+    def post_chat_message(self, chat: Chat, text: str) -> None:
+        """Record the message and start the reply in a thread. Raises UserMessageRejected subclasses
+        (ChatBusy while a reply runs), or OverflowError when no slot is free."""
+        text = clean_user_message(text)  # a bad message must never cost a slot
+        with chat._cond:  # busy check, slot and queueing as one step (same lesson as debates)
+            if chat.state == "busy":
+                raise ChatBusy("the agent is still answering; wait for its reply")
+            if not self.slots.acquire(blocking=False):
+                raise OverflowError("too many agents running")
+            try:
+                chat.add_user_message(text)
+            except BaseException:
+                self.slots.release()
+                raise
+        threading.Thread(target=self._run_chat, args=(chat,), name=f"chat-{chat.id}", daemon=True).start()
+
+    def _run_chat(self, chat: Chat) -> None:
+        try:
+            self.chat_runner.reply(chat)
+        except Exception:  # thread boundary: an engine bug must not leave the chat busy forever
+            logger.exception("chat=%s crashed", chat.id)
+            if not chat.finished:
+                chat.fail_reply("internal_error", "internal error, see server log")
+        finally:
+            self.slots.release()
+
+    def _chat_trace(self, chat: Chat, event: Dict) -> None:
+        """Trace every event; save the snapshot each time the chat goes back to idle."""
+        try:
+            self.projects.append_event(chat.config.project, chat.id, "chat", "", event)
+        except (OSError, UnknownProject, TraceHeaderMismatch):
+            logger.exception("chat=%s trace-debat.csv write failed (event %s)", chat.id, event.get("type"))
+        if chat.finished:
+            try:
+                self.projects.save_chat(chat.config.project, chat.snapshot())
+            except OSError:
+                logger.exception("chat=%s could not be saved", chat.id)
+
+    def get_chat(self, chat_id: str) -> Optional[Chat]:
+        """In-memory chat, else a saved one reloaded from its project folder (memory included)."""
+        chat = self.chats.get(chat_id)
+        if chat is None and self.projects is not None:
+            snap = self.projects.load_chat(chat_id)
+            if snap is not None:
+                loaded = Chat.from_snapshot(snap)
+                loaded.observers.append(self._chat_trace)
+                chat = self.chats.setdefault(chat_id, loaded)
+        return chat
 
     def get_debate(self, debate_id: str) -> Optional[Debate]:
         """In-memory debate, else a finished one reloaded from its project folder."""
@@ -353,7 +429,16 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 return
             m = _EVENTS_PATH.match(path)
             if m:
-                self._stream(m.group(1), query)
+                self._stream(app.get_debate(m.group(1)), query)
+                return
+            m = _CHAT_EVENTS_PATH.match(path)
+            if m:
+                self._stream(app.get_chat(m.group(1)), query)
+                return
+            m = _CHAT_PATH.match(path)
+            chat = app.get_chat(m.group(1)) if m else None
+            if chat is not None:
+                self._json(HTTPStatus.OK, chat.snapshot())
                 return
             m = _DEBATE_PATH.match(path)
             debate = app.get_debate(m.group(1)) if m else None
@@ -364,10 +449,12 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 if path == "/api/projects":
                     self._json(HTTPStatus.OK, app.projects.list())
                     return
-                m = _PROJECT_DEBATES_PATH.match(path)
+                m = _PROJECT_DEBATES_PATH.match(path) or _PROJECT_CHATS_PATH.match(path)
                 if m:
+                    summaries = (app.projects.chat_summaries if path.endswith("/chats")
+                                 else app.projects.debate_summaries)
                     try:
-                        self._json(HTTPStatus.OK, app.projects.debate_summaries(m.group(1)))
+                        self._json(HTTPStatus.OK, summaries(m.group(1)))
                     except (InvalidProjectName, UnknownProject):
                         self._error(HTTPStatus.NOT_FOUND, "unknown project")
                     return
@@ -413,6 +500,13 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if m:
                 self._user_message(m.group(1))
                 return
+            if self.path == "/api/chats":
+                self._chat_message(None)
+                return
+            m = _CHAT_MESSAGES_PATH.match(self.path)
+            if m:
+                self._chat_message(m.group(1))
+                return
             if self.path != "/api/debates":
                 self._error(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -429,7 +523,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     project=str(body.get("project", DEFAULT_PROJECT)),
                     options=body.get("options") or {},
                 )
-                signed_out = app.signed_out_agents(config)
+                signed_out = app.signed_out_agents((config.proposer, config.critic, config.judge))
                 if signed_out:
                     self._error(HTTPStatus.CONFLICT, ", ".join(signed_out)
                                 + " non connecté : ouvre « Comptes LLM » et clique Connecter")
@@ -548,11 +642,58 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 return
             self._json(HTTPStatus.CREATED if created else HTTPStatus.OK, {"name": body["name"], "created": created})
 
-        def _stream(self, debate_id: str, query: str) -> None:
-            debate = app.get_debate(debate_id)
-            if debate is None:
-                self._error(HTTPStatus.NOT_FOUND, "unknown debate")
+        def _chat_message(self, chat_id: Optional[str]) -> None:
+            """A chat message: the first one creates the chat (chat_id None), later ones continue it."""
+            chat = None
+            if chat_id is not None:
+                chat = app.get_chat(chat_id)
+                if chat is None:
+                    self._error(HTTPStatus.NOT_FOUND, "unknown chat")
+                    return
+            body = self._read_json_body()
+            if body is None:
                 return
+            text = body.get("text")
+            if not isinstance(text, str):
+                self._error(HTTPStatus.BAD_REQUEST, "text must be a string")
+                return
+            try:
+                if chat is None:
+                    config = ChatConfig(agent=str(body["agent"]), project=str(body.get("project", DEFAULT_PROJECT)),
+                                        model=body.get("model") or None, effort=body.get("effort") or None)
+                agent = chat.config.agent if chat is not None else config.agent
+                if app.signed_out_agents((agent,)):
+                    self._error(HTTPStatus.CONFLICT, agent + " non connecté : ouvre « Comptes LLM » et clique Connecter")
+                    return
+                if chat is None:
+                    chat = app.start_chat(config, text)
+                else:
+                    app.post_chat_message(chat, text)
+            except KeyError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, f"invalid request: missing {exc}")
+                return
+            except UnknownProject as exc:
+                self._error(HTTPStatus.BAD_REQUEST, f"unknown project: {exc}")
+                return
+            except (InvalidChatConfig, InvalidProjectName, InvalidUserMessage) as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except ChatBusy as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            except (TooManyUserMessages, OverflowError) as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                return
+            # length only: the message is user content, not log material
+            logger.info("chat=%s message chars=%d agent=%s turns=%d", chat.id, len(text.strip()),
+                        chat.config.agent, len(chat.turns))
+            self._json(HTTPStatus.ACCEPTED, {"id": chat.id})
+
+        def _stream(self, log: Optional[EventLog], query: str) -> None:
+            if log is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown debate or chat")
+                return
+            debate = log  # debate or chat: same event protocol
             start = 0
             m = re.search(r"(?:^|&)from=(\d+)", query)
             if m:
@@ -578,7 +719,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     if debate.finished and start >= len(debate.events):
                         break
             except (BrokenPipeError, ConnectionResetError):
-                logger.info("debate=%s SSE client disconnected", debate_id)
+                logger.info("%s SSE client disconnected", debate.id)
 
     return Handler
 

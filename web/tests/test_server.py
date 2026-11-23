@@ -572,3 +572,117 @@ class DisableAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordingMock(MockBackend):
+    """MockBackend that records prompts and can hold a reply until ``gate`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompts: List[str] = []
+        self.gate = threading.Event()
+        self.gate.set()
+
+    def complete(self, request):
+        self.prompts.append(request.prompt)
+        self.gate.wait(5)
+        return super().complete(request)
+
+
+class ChatServerTests(unittest.TestCase):
+    """Chat routes over real HTTP + SSE, saved in a real project folder."""
+
+    def setUp(self):
+        from projects import ProjectStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = ProjectStore(self.tmp.name)
+        self.store.create("default")
+        self.backend = RecordingMock()
+        self.app = App({"mock": self.backend}, None, max_active=1, projects=self.store)
+        self.server = make_server(self.app, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    request = ServerTests.request
+    read_sse = ServerTests.read_sse
+
+    def wait_idle(self, chat_id: str) -> List[Dict]:
+        """SSE until the reply lands, then wait (bounded) for the reply thread to free its slot."""
+        events = self.read_sse(f"/api/chats/{chat_id}/events")
+        deadline = time.monotonic() + 5
+        while not self.app.slots.acquire(blocking=False):
+            self.assertLess(time.monotonic(), deadline, "slot never released")
+            threading.Event().wait(0.01)
+        self.app.slots.release()
+        return events
+
+    def new_chat(self, text="Retiens 42.") -> str:
+        resp, raw = self.request("POST", "/api/chats", {"agent": "mock", "text": text})
+        self.assertEqual(resp.status, 202, raw)
+        return json.loads(raw)["id"]
+
+    def test_chat_remembers_and_is_saved_in_project(self):
+        chat_id = self.new_chat()
+        events = self.wait_idle(chat_id)
+        self.assertEqual([(e["type"], (e.get("turn") or {}).get("role")) for e in events],
+                         [("chat_started", None), ("turn_completed", "user"), ("turn_completed", "assistant")])
+        resp, raw = self.request("POST", f"/api/chats/{chat_id}/messages", {"text": "Quel nombre ?"})
+        self.assertEqual((resp.status, json.loads(raw)), (202, {"id": chat_id}))
+        self.wait_idle(chat_id)
+        self.assertIn("### USER\nRetiens 42.", self.backend.prompts[1])
+        self.assertIn("### USER\nQuel nombre ?", self.backend.prompts[1])
+        # saved: a fresh App on the same folder (server restart) keeps the memory
+        self.app.chats.clear()
+        snap = json.loads(self.request("GET", f"/api/chats/{chat_id}")[1])
+        self.assertEqual((snap["state"], len(snap["turns"]), snap["title"]), ("idle", 4, "Retiens 42."))
+        self.assertEqual(self.request("POST", f"/api/chats/{chat_id}/messages", {"text": "Et alors ?"})[0].status, 202)
+        self.wait_idle(chat_id)
+        self.assertIn("Quel nombre ?", self.backend.prompts[2])
+        listing = json.loads(self.request("GET", "/api/projects/default/chats")[1])
+        self.assertEqual([(c["id"], c["agent"], c["messages"]) for c in listing], [(chat_id, "mock", 6)])
+        debates = json.loads(self.request("GET", "/api/projects/default/debates")[1])
+        self.assertEqual(debates, [])  # chats stay out of the debate list
+
+    def test_message_while_busy_is_409_and_no_slot_is_429(self):
+        self.backend.gate.clear()
+        chat_id = self.new_chat()
+        resp, raw = self.request("POST", f"/api/chats/{chat_id}/messages", {"text": "vite"})
+        self.assertEqual(resp.status, 409, raw)
+        resp, raw = self.request("POST", "/api/chats", {"agent": "mock", "text": "other"})
+        self.assertEqual(resp.status, 429, raw)  # max_active=1, taken by the running reply
+        self.backend.gate.set()
+        self.wait_idle(chat_id)
+        self.assertEqual(len(self.app.get_chat(chat_id).turns), 2)
+        self.assertEqual(len(self.app.chats), 1)  # the refused chat was not created
+
+    def test_errors(self):
+        cases = [("/api/chats", {"agent": "mock"}, 400),
+                 ("/api/chats", {"agent": "mock", "text": "  "}, 400),
+                 ("/api/chats", {"agent": "nope", "text": "hi"}, 400),
+                 ("/api/chats", {"agent": "mock", "model": "opus", "text": "hi"}, 400),
+                 ("/api/chats", {"agent": "mock", "project": "missing", "text": "hi"}, 400),
+                 ("/api/chats", {"text": "hi"}, 400),
+                 ("/api/chats/0123456789ab/messages", {"text": "hi"}, 404)]
+        for path, body, status in cases:
+            resp, raw = self.request("POST", path, body)
+            self.assertEqual(resp.status, status, (body, raw))
+        self.assertEqual(self.request("GET", "/api/chats/0123456789ab")[0].status, 404)
+        self.assertEqual(self.request("GET", "/api/chats/0123456789ab/events")[0].status, 404)
+        self.assertEqual(self.app.chats, {})
+        self.assertTrue(self.app.slots.acquire(blocking=False))  # no slot leaked by the refusals
+        self.app.slots.release()
+
+    def test_signed_out_agent_is_refused(self):
+        from auth import AuthManager, AuthStatus
+        self.app.llm_auth = mock.create_autospec(AuthManager, instance=True)
+        self.app.llm_auth.status.return_value = AuthStatus(logged_in=False)
+        resp, raw = self.request("POST", "/api/chats", {"agent": "mock", "text": "hi"})
+        self.assertEqual(resp.status, 409, raw)
+        self.assertTrue(json.loads(raw)["error"].startswith("mock non connecté"), raw)
+        self.app.llm_auth.status.assert_called_once_with("mock")
+        self.assertEqual(self.backend.prompts, [])

@@ -25,6 +25,7 @@ TRACE_FILENAME = "trace-debat.csv"
 # Name used before the rename. A legacy file holding data is kept untouched, never rewritten.
 LEGACY_TRACE_FILENAME = "FADO.csv"
 DEBATES_DIRNAME = "debates"
+CHATS_DIRNAME = "chats"
 # Letters, digits, '-' and '_' only: no '/', no '..', so a name can never escape the root.
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 DEBATE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -160,24 +161,57 @@ class ProjectStore:
             with open(path, "a", newline="", encoding="utf-8") as fh:
                 csv.writer(fh).writerow(row)
 
-    def save_debate(self, project: str, snapshot: Dict) -> str:
-        path = os.path.join(self.path(project), DEBATES_DIRNAME, f"{snapshot['id']}.json")
+    def _save(self, project: str, dirname: str, snapshot: Dict) -> str:
+        folder = os.path.join(self.path(project), dirname)
+        os.makedirs(folder, exist_ok=True)  # chats/ is absent in projects created before chats existed
+        path = os.path.join(folder, f"{snapshot['id']}.json")
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(snapshot, fh, indent=2, ensure_ascii=False)
         os.replace(tmp, path)  # atomic: a reader never sees a half-written snapshot
         return path
 
-    def load_debate(self, debate_id: str) -> Optional[Dict]:
-        """Find a saved debate in any project (ids are globally unique)."""
-        if not DEBATE_ID_RE.match(debate_id):
+    def _load(self, dirname: str, item_id: str) -> Optional[Dict]:
+        """Find a saved item in any project (ids are globally unique)."""
+        if not DEBATE_ID_RE.match(item_id):
             return None
-        for project in self.list():
-            path = os.path.join(self.root, project["name"], DEBATES_DIRNAME, f"{debate_id}.json")
-            if os.path.exists(path):
+        for name in sorted(os.listdir(self.root)):
+            path = os.path.join(self.root, name, dirname, f"{item_id}.json")
+            if PROJECT_NAME_RE.match(name) and os.path.exists(path):
                 with open(path, encoding="utf-8") as fh:
                     return json.load(fh)
         return None
+
+    def save_debate(self, project: str, snapshot: Dict) -> str:
+        return self._save(project, DEBATES_DIRNAME, snapshot)
+
+    def load_debate(self, debate_id: str) -> Optional[Dict]:
+        return self._load(DEBATES_DIRNAME, debate_id)
+
+    def save_chat(self, project: str, snapshot: Dict) -> str:
+        return self._save(project, CHATS_DIRNAME, snapshot)
+
+    def load_chat(self, chat_id: str) -> Optional[Dict]:
+        return self._load(CHATS_DIRNAME, chat_id)
+
+    def chat_summaries(self, project: str) -> List[Dict]:
+        if not self.exists(project):
+            raise UnknownProject(project)
+        folder = os.path.join(self.path(project), CHATS_DIRNAME)
+        out = []
+        for fname in (os.listdir(folder) if os.path.isdir(folder) else []):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(folder, fname), encoding="utf-8") as fh:
+                    snap = json.load(fh)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("skipping unreadable chat %s/%s: %s", project, fname, exc)
+                continue
+            cfg = snap.get("config", {})
+            out.append({"id": snap.get("id"), "created_at": snap.get("created_at"), "title": snap.get("title", ""),
+                        "agent": cfg.get("agent"), "model": cfg.get("model"), "messages": len(snap.get("turns", []))})
+        return sorted(out, key=lambda s: s.get("created_at") or 0, reverse=True)
 
     def debate_summaries(self, project: str) -> List[Dict]:
         folder = os.path.join(self.path(project), DEBATES_DIRNAME)
