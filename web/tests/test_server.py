@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from typing import Dict, List
 from unittest import mock
@@ -169,6 +170,52 @@ class ServerTests(unittest.TestCase):
         gate.set()
         self.assertEqual(self.read_sse(f"/api/debates/{first}/events")[-1]["type"], "debate_completed")
 
+
+
+    def finish(self, debate_id: str) -> None:
+        """Read the stream to its end, then wait (bounded) for the runner thread to give its slot back:
+        the slot is released just after the terminal event."""
+        self.read_sse(f"/api/debates/{debate_id}/events")
+        deadline = time.monotonic() + 5
+        while not self.app.slots.acquire(blocking=False):
+            self.assertLess(time.monotonic(), deadline, "slot never released")
+            threading.Event().wait(0.01)
+        self.app.slots.release()
+
+    def test_user_message_after_verdict_reopens_for_bonus_round(self):
+        debate_id = self.start(max_rounds=1)
+        self.finish(debate_id)
+        resp, raw = self.request("POST", f"/api/debates/{debate_id}/messages", {"text": "Et le coût ?"})
+        self.assertEqual(resp.status, 202, raw)
+        self.assertEqual(json.loads(raw), {"reopened": True})
+        events = self.read_sse(f"/api/debates/{debate_id}/events")
+        types = [e["type"] for e in events]
+        self.assertEqual(types.count("debate_completed"), 2)
+        self.assertEqual(events[-1]["bonus"], 1)
+        self.assertIn({"type": "user_message", "text": "Et le coût ?"},
+                      [{"type": e["type"], "text": e.get("text")} for e in events if e["type"] == "user_message"])
+        self.finish(debate_id)  # the slot taken by the bonus round comes back
+
+    def test_user_message_errors(self):
+        self.assertEqual(self.request("POST", "/api/debates/0123456789ab/messages", {"text": "x"})[0].status, 404)
+        debate_id = self.start(max_rounds=1)
+        self.finish(debate_id)
+        self.assertEqual(self.request("POST", f"/api/debates/{debate_id}/messages", {"text": "  "})[0].status, 400)
+        self.assertEqual(self.request("POST", f"/api/debates/{debate_id}/messages", {"text": 3})[0].status, 400)
+        self.app.get_debate(debate_id).state = "failed"
+        self.assertEqual(self.request("POST", f"/api/debates/{debate_id}/messages", {"text": "x"})[0].status, 409)
+
+    def test_user_message_on_finished_debate_needs_a_free_slot(self):
+        debate_id = self.start(max_rounds=1)
+        self.finish(debate_id)
+        self.assertTrue(self.app.slots.acquire(blocking=False))  # max_active=1: now full
+        try:
+            resp, _ = self.request("POST", f"/api/debates/{debate_id}/messages", {"text": "x"})
+            self.assertEqual(resp.status, 429)
+            debate = self.app.get_debate(debate_id)
+            self.assertEqual((debate.state, debate.pending_user, debate.bonus_rounds), ("completed", [], 0))
+        finally:
+            self.app.slots.release()
 
 
 class AuthServerTests(unittest.TestCase):

@@ -7,6 +7,9 @@ $question
 DEBATE SO FAR:
 $transcript
 
+Blocks labeled USER come from the human who asked the question. Address each
+of their remarks explicitly. They can be wrong: if so, say why, with reasons.
+
 Attack the proposer's LATEST position: hidden assumptions, logical gaps,
 counter-examples, missing evidence, overconfident conclusions. Number each
 objection and rate it (critical / major / minor). Do not repeat objections the

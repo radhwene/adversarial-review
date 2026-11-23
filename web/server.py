@@ -30,7 +30,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,7 +39,8 @@ from auth import (DEFAULT_PROVIDERS, AuthManager, InvalidAuthCode, NoLoginInProg
                   UnknownProvider)
 from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
                       deepseek_key_store)
-from engine import Debate, DebateConfig, DebateRunner, InvalidDebateConfig  # noqa: E402
+from engine import (Debate, DebateClosed, DebateConfig, DebateRunner, InvalidDebateConfig,  # noqa: E402
+                    InvalidUserMessage, TooManyUserMessages, clean_user_message)
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
                       ProjectStore, UnknownProject)
 
@@ -88,6 +89,7 @@ def client_ip(peer: str, forwarded_for: Optional[str], trusted: Tuple[IpNetwork,
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _EVENTS_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/events$")
 _DEBATE_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})$")
+_MESSAGES_PATH = re.compile(r"^/api/debates/([0-9a-f]{12})/messages$")
 _PROJECT_DEBATES_PATH = re.compile(r"^/api/projects/([^/]+)/debates$")
 _AUTH_ACTION_PATH = re.compile(r"^/api/auth/([a-z]+)/(login|code|logout|cancel)$")
 _KEY_ACTION_PATH = re.compile(r"^/api/keys/([a-z]+)/(save|clear)$")
@@ -188,9 +190,32 @@ class App:
         threading.Thread(target=self._run, args=(debate,), name=f"debate-{debate.id}", daemon=True).start()
         return debate
 
-    def _run(self, debate: Debate) -> None:
+    def post_user_message(self, debate: Debate, text: str) -> bool:
+        """Queue the human's remark. On a completed debate it takes a slot and starts a bonus round.
+        Returns True when it reopened the debate. Raises UserMessageRejected subclasses, or
+        OverflowError when no slot is free for the bonus round."""
+        text = clean_user_message(text)  # a bad message must never cost a slot
+        needs_slot = debate.state == "completed"
+        if needs_slot and not self.slots.acquire(blocking=False):
+            raise OverflowError("too many debates running")
         try:
-            self.runner.run(debate)
+            reopened = debate.add_user_message(text)
+        except BaseException:
+            if needs_slot:
+                self.slots.release()
+            raise
+        if needs_slot and not reopened:  # state changed between the check and the lock (cannot finish twice, but be safe)
+            self.slots.release()
+        if reopened:
+            if self.projects is not None and self._trace not in debate.observers:  # reloaded from disk
+                debate.observers.append(self._trace)
+            threading.Thread(target=self._run, args=(debate, self.runner.resume),
+                             name=f"debate-{debate.id}-bonus", daemon=True).start()
+        return reopened
+
+    def _run(self, debate: Debate, step: Optional[Callable[[Debate], None]] = None) -> None:
+        try:
+            (step or self.runner.run)(debate)
         except Exception:  # thread boundary: an engine bug must not leave clients waiting forever
             logger.exception("debate=%s crashed", debate.id)
             if not debate.finished:
@@ -384,6 +409,10 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if m:
                 self._key_action(m.group(1), m.group(2))
                 return
+            m = _MESSAGES_PATH.match(self.path)
+            if m:
+                self._user_message(m.group(1))
+                return
             if self.path != "/api/debates":
                 self._error(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -420,6 +449,34 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             logger.info("debate=%s started project=%s proposer=%s critic=%s judge=%s rounds=%d", debate.id,
                         config.project, config.proposer, config.critic, config.judge, config.max_rounds)
             self._json(HTTPStatus.ACCEPTED, {"id": debate.id})
+
+        def _user_message(self, debate_id: str) -> None:
+            """The human's remark in a debate: read before the next turn, or a bonus round after the verdict."""
+            debate = app.get_debate(debate_id)
+            if debate is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown debate")
+                return
+            body = self._read_json_body()
+            if body is None:
+                return
+            text = body.get("text")
+            if not isinstance(text, str):
+                self._error(HTTPStatus.BAD_REQUEST, "text must be a string")
+                return
+            try:
+                reopened = app.post_user_message(debate, text)
+            except InvalidUserMessage as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            except DebateClosed as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            except (TooManyUserMessages, OverflowError) as exc:
+                self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                return
+            # length only: the remark itself is user content, not log material
+            logger.info("debate=%s user message chars=%d reopened=%s", debate.id, len(text.strip()), reopened)
+            self._json(HTTPStatus.ACCEPTED, {"reopened": reopened})
 
         def _key_action(self, provider: str, action: str) -> None:
             """Save or delete an API key. The value never reaches a log line or a response body."""

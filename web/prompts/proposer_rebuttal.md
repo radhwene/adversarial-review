@@ -6,6 +6,9 @@ $question
 DEBATE SO FAR:
 $transcript
 
+Blocks labeled USER come from the human who asked the question. Address each
+of their remarks explicitly. They can be wrong: if so, say why, with reasons.
+
 Respond to each of the critic's latest objections by number: concede it, refute
 it with reasoning, or narrow your claim. Conceding valid points is a strength,
 not a loss. Then restate your current position in 1-3 sentences. Max ~300 words.

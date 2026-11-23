@@ -7,6 +7,11 @@ $question
 FULL DEBATE:
 $transcript
 
+Blocks labeled USER are the opinion of the human who asked. Weigh them as one
+argument among others, on their merit: do not side with them because they come
+from the user, and do not ignore them. If an earlier JUDGE verdict appears above,
+the debate continued after it: give a fresh verdict and say what changed.
+
 Write:
 ## Verdict
 The best-supported answer to the question, in a few sentences.

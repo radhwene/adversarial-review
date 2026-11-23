@@ -12,8 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backends import (Backend, BackendError, BackendTimeout, ClaudeBackend, CodexBackend,  # noqa: E402
                       MockBackend, TurnRequest)
-from engine import (Debate, DebateConfig, DebateRunner, InvalidDebateConfig,  # noqa: E402
-                    parse_status_block, strip_status_block)
+from engine import (MAX_BONUS_ROUNDS, MAX_USER_MESSAGE_CHARS, MAX_USER_MESSAGES, Debate,  # noqa: E402
+                    DebateClosed, DebateConfig, DebateRunner, InvalidDebateConfig, InvalidUserMessage,
+                    TooManyUserMessages, parse_status_block, strip_status_block)
 
 
 def proposer_reply(text: str, conf: int = 70) -> str:
@@ -304,3 +305,133 @@ class CliBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HookedBackend(ScriptedBackend):
+    """ScriptedBackend that runs hooks[i]() while call number i is in flight (0-based)."""
+
+    def __init__(self, replies: List[str], hooks) -> None:
+        super().__init__(replies)
+        self.hooks = hooks
+
+    def complete(self, request: TurnRequest) -> str:
+        hook = self.hooks.get(len(self.requests))
+        reply = super().complete(request)
+        if hook is not None:
+            hook()
+        return reply
+
+
+def new_debate(rounds: int = 1) -> Debate:
+    return Debate(config=DebateConfig(question="Is P true?", proposer="s", critic="s", judge="s", max_rounds=rounds))
+
+
+class UserMessageTests(unittest.TestCase):
+    def test_remark_during_turn_is_read_before_next_turn(self):
+        debate = new_debate(rounds=1)
+        # call 1 = critic round 1: the human speaks while it runs
+        backend = HookedBackend([proposer_reply("OPEN"), critic_reply("CRIT", "CONTEST", 1), proposer_reply("REB"),
+                                 JUDGE_REPLY], {1: lambda: debate.add_user_message("  Think about cost.  ")})
+        DebateRunner({"s": backend}).run(debate)
+
+        self.assertEqual(debate.state, "completed")
+        self.assertEqual([(t.role, t.round) for t in debate.turns],
+                         [("proposer", 0), ("critic", 1), ("user", 1), ("proposer", 1), ("judge", 2)])
+        self.assertEqual(debate.turns[2].content, "Think about cost.")
+        self.assertNotIn("Think about cost.", backend.requests[1].prompt)  # the running turn is not interrupted
+        for later in backend.requests[2:]:
+            self.assertIn("### Round 1: USER (the human who asked the question)\nThink about cost.", later.prompt)
+        types = [e["type"] for e in debate.events]
+        self.assertEqual(types.count("user_message"), 1)
+        self.assertLess(types.index("user_message"), len(types) - 1)
+        self.assertEqual(debate.bonus_rounds, 0)
+
+    def test_remark_after_verdict_runs_bonus_round_and_new_verdict(self):
+        debate = new_debate(rounds=1)
+        backend = ScriptedBackend([proposer_reply("OPEN"), critic_reply("ok", "ACCEPT", 0), JUDGE_REPLY,
+                                   proposer_reply("ANSWER-USER"), critic_reply("C2", "CONTEST", 1),
+                                   JUDGE_REPLY.replace("WINNER: critic", "WINNER: proposer")])
+        runner = DebateRunner({"s": backend})
+        runner.run(debate)
+        self.assertTrue(debate.add_user_message("You forgot the edge case."))
+        self.assertEqual(debate.state, "running")
+        runner.resume(debate)
+
+        self.assertEqual(debate.state, "completed")
+        self.assertEqual([(r.role, r.round) for r in backend.requests[3:]], [("proposer", 2), ("critic", 2), ("judge", 3)])
+        self.assertIn("USER (the human who asked the question)\nYou forgot the edge case.", backend.requests[3].prompt)
+        self.assertIn("JUDGE (s)", backend.requests[5].prompt)  # the new judge sees the old verdict
+        completed = [e for e in debate.events if e["type"] == "debate_completed"]
+        self.assertEqual(len(completed), 2)
+        self.assertEqual(completed[-1]["bonus"], 1)
+        self.assertEqual(completed[-1]["verdict"]["WINNER"], "proposer")
+        self.assertIn("debate_resumed", [e["type"] for e in debate.events])
+        self.assertEqual([e["seq"] for e in debate.events], list(range(len(debate.events))))
+
+    def test_remark_during_judge_chains_a_bonus_round(self):
+        debate = new_debate(rounds=1)
+        backend = HookedBackend([proposer_reply("OPEN"), critic_reply("ok", "ACCEPT", 0), JUDGE_REPLY,
+                                 proposer_reply("P"), critic_reply("C", "CONTEST", 1), JUDGE_REPLY],
+                                {2: lambda: debate.add_user_message("late remark")})
+        DebateRunner({"s": backend}).run(debate)
+        self.assertEqual([r.role for r in backend.requests], ["proposer", "critic", "judge", "proposer", "critic", "judge"])
+        self.assertEqual([e["type"] for e in debate.events].count("debate_completed"), 1)
+        self.assertEqual(debate.bonus_rounds, 1)
+        self.assertEqual(debate.state, "completed")
+
+    def test_remark_during_last_allowed_judge_is_kept_unanswered(self):
+        debate = new_debate(rounds=1)
+        debate.bonus_rounds = MAX_BONUS_ROUNDS
+        backend = HookedBackend([proposer_reply("OPEN"), critic_reply("ok", "ACCEPT", 0), JUDGE_REPLY],
+                                {2: lambda: debate.add_user_message("too late")})
+        DebateRunner({"s": backend}).run(debate)
+        self.assertEqual(len(backend.requests), 3)
+        self.assertEqual(debate.state, "completed")
+        self.assertEqual((debate.turns[-1].role, debate.turns[-1].content), ("user", "too late"))
+        self.assertEqual(debate.pending_user, [])
+
+    def test_rejects_empty_and_too_long(self):
+        debate = new_debate()
+        for bad in ("", "   \n", "x" * (MAX_USER_MESSAGE_CHARS + 1)):
+            with self.assertRaises(InvalidUserMessage):
+                debate.add_user_message(bad)
+        debate.add_user_message("x" * MAX_USER_MESSAGE_CHARS)  # boundary accepted
+        self.assertEqual(len(debate.pending_user), 1)
+
+    def test_rejects_failed_debate(self):
+        debate = run_debate(ScriptedBackend([], error=BackendError("boom")))
+        with self.assertRaises(DebateClosed):
+            debate.add_user_message("hello")
+        self.assertEqual(debate.pending_user, [])
+
+    def test_caps_messages_per_debate(self):
+        debate = new_debate()
+        for i in range(MAX_USER_MESSAGES):
+            debate.add_user_message(f"m{i}")
+        with self.assertRaises(TooManyUserMessages):
+            debate.add_user_message("one more")
+
+    def test_caps_bonus_rounds(self):
+        debate = new_debate()
+        debate.state, debate.bonus_rounds = "completed", MAX_BONUS_ROUNDS
+        with self.assertRaises(DebateClosed):
+            debate.add_user_message("again")
+        self.assertEqual(debate.state, "completed")
+
+    def test_bonus_failure_fails_debate(self):
+        debate = run_debate(MockBackend(), rounds=1)
+        debate.add_user_message("remark")
+        DebateRunner({"s": ScriptedBackend([], error=BackendTimeout("slow"))}).resume(debate)
+        self.assertEqual(debate.state, "failed")
+        self.assertEqual(debate.events[-1]["kind"], "timeout")
+
+    def test_snapshot_round_trip_keeps_user_turns_and_bonus(self):
+        debate = run_debate(MockBackend(), rounds=1)
+        debate.add_user_message("remark")
+        DebateRunner({"s": MockBackend()}).resume(debate)
+        again = Debate.from_snapshot(json.loads(json.dumps(debate.snapshot())))
+        self.assertEqual(again.bonus_rounds, 1)
+        self.assertIn(("user", "remark"), [(t.role, t.content) for t in again.turns])
+        old = debate.snapshot()
+        del old["bonus_rounds"]
+        self.assertEqual(Debate.from_snapshot(old).bonus_rounds, 0)
