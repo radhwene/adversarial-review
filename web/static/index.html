@@ -273,6 +273,13 @@ legend { padding: 0; }
 .turn-body.folded::after { content: ""; position: absolute; inset: auto 0 0 0; height: 4em; background: linear-gradient(transparent, var(--w)); border-radius: 0 0 var(--r-lg) var(--r-lg); }
 .unfold { align-self: flex-start; min-height: 36px; padding: 0 var(--space-2); font-size: var(--fs-eyebrow); color: var(--c); }
 .turn.critic .unfold { align-self: flex-end; }
+.turn.user { --c: var(--ink); --w: var(--thesis-wash); --l: var(--thesis-line); align-self: center; max-width: 80%; }
+.turn.user.queued { opacity: .7; }
+.turn.user .turn-body { border-radius: var(--r-lg); white-space: pre-wrap; }
+.remark { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.remark textarea { min-height: 72px; padding: var(--space-2) var(--space-3); border-radius: var(--r); resize: vertical; line-height: 1.5; }
+.remark .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.remark small { color: var(--ink-3); font-size: var(--fs-sm); }
 .pending .turn-body { min-width: 220px; color: var(--ink-3); font-size: var(--fs-sm); }
 .writing { display: flex; align-items: center; gap: var(--space-2); }
 .writing i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); animation: blink 1.2s ease-in-out infinite; }
@@ -446,6 +453,14 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
       </div>
       <div class="verdict waiting" id="verdict" aria-live="polite">Verdict en attente : le juge statue après le dernier round.</div>
       <div class="record" id="timeline"></div>
+      <form class="remark" id="remark" hidden>
+        <label for="remark-text"><b>Ton avis</b></label>
+        <textarea class="field" id="remark-text" maxlength="4000" placeholder="Ex. : « Vous oubliez le coût de maintenance. »"></textarea>
+        <div class="row">
+          <small id="remark-hint" aria-live="polite"></small>
+          <button type="submit" class="btn primary" id="remark-send">Envoyer mon avis</button>
+        </div>
+      </form>
     </section>
   </main>
 </div>
@@ -460,7 +475,7 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const ROLE_LABEL = { proposer: "Défense", critic: "Attaque", judge: "Juge" };
+const ROLE_LABEL = { proposer: "Défense", critic: "Attaque", judge: "Juge", user: "Toi" };
 const WINNER_LABEL = { proposer: "Défense", critic: "Attaque", draw: "Match nul" };
 const STATE_LABEL = { running: "en cours", completed: "terminé", failed: "échec" };
 const EXAMPLES = [
@@ -473,6 +488,9 @@ const COPY_FEEDBACK_MS = 2000;
 const FOLD_CHARS = 700;         // turns longer than this start folded behind "Tout lire"
 const TABS = ["list", "arena", "accounts"];
 const MIN_ROUNDS = 1, MAX_ROUNDS = 5, DEFAULT_ROUNDS = 3;
+const MAX_BONUS_ROUNDS = 3;      // engine.MAX_BONUS_ROUNDS: remarks after the verdict reopen the debate this many times
+const BONUS_STEPS = 3;          // proposer, critic, judge
+let caseId = null, lastSeq = -1, bonusUsed = 0, caseState = null;
 let live = false, source = null, steps = 0, stepsDone = 0, timerId = null, lastSitting = null, caseCfg = null;
 let transcript = [], historyList = [];
 
@@ -534,6 +552,7 @@ function showView(name) {
 function resetCase() {
   clearInterval(timerId);
   $("timeline").replaceChildren(); lastSitting = null; stepsDone = 0; caseCfg = null; transcript = [];
+  caseId = null; lastSeq = -1; bonusUsed = 0; caseState = null; $("remark").hidden = true; $("remark-text").value = "";
   $("s-round").textContent = "0"; $("s-conf").textContent = "–"; $("s-obj").textContent = "–";
   const v = $("verdict"); v.className = "verdict waiting"; v.replaceChildren("Verdict en attente : le juge statue après le dernier round.");
   ["case-no", "case-project", "case-date", "case-state", "case-title"].forEach((id) => { $(id).textContent = ""; });
@@ -553,7 +572,33 @@ function setCaseHeader(id, cfg, createdAt) {
   document.title = cfg.question.slice(0, 60) + " · llmarena";
 }
 
-function setState(state) { const s = $("case-state"); s.textContent = STATE_LABEL[state] || state; s.className = "st " + state; }
+function setState(state) { const s = $("case-state"); s.textContent = STATE_LABEL[state] || state; s.className = "st " + state; caseState = state; drawRemark(); }
+
+// The human's say: read before the next turn while the debate runs; after the verdict it buys a bonus round.
+function drawRemark() {
+  const box = $("remark"), hint = $("remark-hint"), send = $("remark-send");
+  const open = caseId && (caseState === "running" || (caseState === "completed" && bonusUsed < MAX_BONUS_ROUNDS));
+  box.hidden = !open;
+  if (!open) return;
+  if (caseState === "running") { hint.textContent = "Lu par les agents avant le prochain tour."; send.textContent = "Envoyer mon avis"; }
+  else { hint.textContent = "Relance un round (défense, attaque) puis un nouveau verdict. Reste " + (MAX_BONUS_ROUNDS - bonusUsed) + "."; send.textContent = "Relancer avec mon avis"; }
+}
+
+async function sendRemark(e) {
+  e.preventDefault();
+  const text = $("remark-text").value.trim();
+  if (!text || !caseId) { $("remark-text").focus(); return; }
+  $("remark-send").disabled = true;
+  let res, data;
+  try {
+    res = await fetch("api/debates/" + caseId + "/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    data = await res.json();
+  } catch (err) { banner("err", "Serveur injoignable : " + err.message); return; }
+  finally { $("remark-send").disabled = false; }
+  if (!res.ok) { banner("err", data.error || ("HTTP " + res.status)); return; }
+  $("remark-text").value = "";
+  if (data.reopened && !source) { live = true; setRunning(true); follow(caseId, lastSeq + 1); }
+}
 
 // ---------- transcript ----------
 function chipsFor(role, st) {
@@ -574,7 +619,7 @@ function chipsFor(role, st) {
 }
 
 function sitting(role, round) {
-  const key = role === "judge" ? "judge" : String(round);
+  const key = role === "judge" ? "judge" + round : String(round);
   if (key === lastSitting) return;
   lastSitting = key;
   $("timeline").append(el("div", "sitting", role === "judge" ? "Délibéré" : round === 0 ? "Ouverture" : "Round " + round));
@@ -607,13 +652,34 @@ function addPending(ev) {
   timerId = setInterval(() => { t.textContent = "rédige… " + Math.round((Date.now() - t0) / 1000) + " s"; }, 1000);
 }
 
+function addQueuedRemark(text) {
+  const wasNear = nearBottom();
+  const card = el("article", "turn user queued" + (live ? " enter" : ""));
+  const head = turnHead("user", "en attente du prochain tour"); card.append(head);
+  const body = el("div", "turn-body"); body.textContent = text; card.append(body);
+  $("timeline").append(card);
+  revealLatest(card, wasNear);
+}
+
+function addUserTurn(turn) {
+  transcript.push(turn);
+  const queued = document.querySelector("#timeline .turn.user.queued");  // remarks are read in the order sent
+  if (queued) queued.remove();
+  const pending = $("pending");
+  const card = el("article", "turn user");
+  card.append(turnHead("user", "lu au round " + turn.round));
+  const body = el("div", "turn-body"); body.textContent = turn.content; card.append(body);
+  if (pending) pending.before(card); else $("timeline").append(card);
+}
+
 function addTurn(turn) {
+  if (turn.role === "user") { addUserTurn(turn); return; }
   const wasNear = nearBottom();
   clearInterval(timerId); const p = $("pending"); if (p) p.remove();
   transcript.push(turn);
   sitting(turn.role, turn.round);
   const card = el("article", "turn " + turn.role + (live ? " enter" : ""));
-  if (turn.role === "judge") card.id = "judgment";
+  if (turn.role === "judge") { const old = $("judgment"); if (old) old.removeAttribute("id"); card.id = "judgment"; }
   const head = turnHead(turn.role, turn.agent);
   head.append(el("span", "tmeta", turn.duration_s + " s"));
   head.append(chipsFor(turn.role, turn.status)); card.append(head);
@@ -684,6 +750,16 @@ function handle(ev) {
     case "converged":
       banner("info", "L'attaque accepte au round " + ev.round + " : le débat a convergé, passage au juge.");
       steps = stepsDone + 1; drawProgress(false); break;
+    case "user_message": addQueuedRemark(ev.text); break;
+    case "debate_resumed":
+      bonusUsed = ev.bonus; setState("running");
+      banner("info", "Ton avis relance le débat : round bonus " + ev.bonus + "/" + MAX_BONUS_ROUNDS + ", puis nouveau verdict.");
+      break;
+    case "bonus_round_started":
+      bonusUsed = Math.max(bonusUsed, ev.bonus); lastSitting = null;
+      $("timeline").append(el("div", "sitting", "Round bonus " + ev.bonus));
+      lastSitting = String(ev.round);
+      steps = stepsDone + BONUS_STEPS; drawProgress(true); break;
     case "debate_completed": setState("completed"); finish(); break;
     case "debate_failed": {
       clearInterval(timerId); const p = $("pending"); if (p) p.remove();
@@ -725,10 +801,13 @@ async function start(e) {
 }
 
 // Server replays every event from seq 0, so a reload (or #id link) rebuilds the whole debate.
-function follow(id) {
-  source = new EventSource("api/debates/" + id + "/events");
+function follow(id, from) {
+  caseId = id; drawRemark();
+  source = new EventSource("api/debates/" + id + "/events" + (from ? "?from=" + from : ""));
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
+    if (ev.seq <= lastSeq) return;  // already drawn (reconnect overlap)
+    lastSeq = ev.seq;
     if (ev.type === "debate_started") {
       steps = 1 + ev.config.max_rounds * 2 + 1;
       setCaseHeader(id, ev.config, ev.ts);
@@ -754,6 +833,8 @@ async function resumeFromHash() {
 }
 
 // "Relancer / modifier": back to the form, prefilled with the case's question, parties and rounds.
+$("remark").addEventListener("submit", sendRemark);
+
 function newDebate(prefill) {
   if (source) { source.close(); source = null; }
   clearInterval(timerId); live = false; setRunning(false);
