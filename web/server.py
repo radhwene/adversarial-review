@@ -195,17 +195,17 @@ class App:
         Returns True when it reopened the debate. Raises UserMessageRejected subclasses, or
         OverflowError when no slot is free for the bonus round."""
         text = clean_user_message(text)  # a bad message must never cost a slot
-        needs_slot = debate.state == "completed"
-        if needs_slot and not self.slots.acquire(blocking=False):
-            raise OverflowError("too many debates running")
-        try:
-            reopened = debate.add_user_message(text)
-        except BaseException:
-            if needs_slot:
-                self.slots.release()
-            raise
-        if needs_slot and not reopened:  # state changed between the check and the lock (cannot finish twice, but be safe)
-            self.slots.release()
+        # under the debate lock: the judge cannot complete between "is it finished?" and queueing the remark
+        with debate._cond:
+            needs_slot = debate.state == "completed"
+            if needs_slot and not self.slots.acquire(blocking=False):
+                raise OverflowError("too many debates running")
+            try:
+                reopened = debate.add_user_message(text)
+            except BaseException:
+                if needs_slot:
+                    self.slots.release()
+                raise
         if reopened:
             if self.projects is not None and self._trace not in debate.observers:  # reloaded from disk
                 debate.observers.append(self._trace)

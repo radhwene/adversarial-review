@@ -491,6 +491,7 @@ const MIN_ROUNDS = 1, MAX_ROUNDS = 5, DEFAULT_ROUNDS = 3;
 const MAX_BONUS_ROUNDS = 3;      // engine.MAX_BONUS_ROUNDS: remarks after the verdict reopen the debate this many times
 const BONUS_STEPS = 3;          // proposer, critic, judge
 let caseId = null, lastSeq = -1, bonusUsed = 0, caseState = null;
+let replayUntil = -1;            // seq of the last stored event when opening a saved debate: earlier verdicts are not the end
 let live = false, source = null, steps = 0, stepsDone = 0, timerId = null, lastSitting = null, caseCfg = null;
 let transcript = [], historyList = [];
 
@@ -552,7 +553,7 @@ function showView(name) {
 function resetCase() {
   clearInterval(timerId);
   $("timeline").replaceChildren(); lastSitting = null; stepsDone = 0; caseCfg = null; transcript = [];
-  caseId = null; lastSeq = -1; bonusUsed = 0; caseState = null; $("remark").hidden = true; $("remark-text").value = "";
+  caseId = null; lastSeq = -1; bonusUsed = 0; caseState = null; replayUntil = -1; $("remark").hidden = true; $("remark-text").value = "";
   $("s-round").textContent = "0"; $("s-conf").textContent = "–"; $("s-obj").textContent = "–";
   const v = $("verdict"); v.className = "verdict waiting"; v.replaceChildren("Verdict en attente : le juge statue après le dernier round.");
   ["case-no", "case-project", "case-date", "case-state", "case-title"].forEach((id) => { $(id).textContent = ""; });
@@ -760,7 +761,7 @@ function handle(ev) {
       $("timeline").append(el("div", "sitting", "Round bonus " + ev.bonus));
       lastSitting = String(ev.round);
       steps = stepsDone + BONUS_STEPS; drawProgress(true); break;
-    case "debate_completed": setState("completed"); finish(); break;
+    case "debate_completed": setState("completed"); if (ev.seq >= replayUntil) finish(); break;
     case "debate_failed": {
       clearInterval(timerId); const p = $("pending"); if (p) p.remove();
       banner("err", "Échec (" + ev.kind + ") : " + ev.message);
@@ -828,6 +829,7 @@ async function resumeFromHash() {
   markCurrent();
   live = snap.state === "running"; setRunning(live);
   resetCase(); setState(snap.state);
+  replayUntil = snap.events?.length ? snap.events[snap.events.length - 1].seq : -1;
   window.scrollTo({ top: 0 });
   follow(id);
 }
