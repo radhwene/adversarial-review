@@ -47,6 +47,16 @@ class ChatMemoryTests(unittest.TestCase):
                          ["chat_started"] + ["turn_completed"] * 4)
         self.assertEqual(chat.title, "Retiens le nombre 42.")
 
+    def test_long_title_is_cut_with_an_ellipsis(self):
+        from chat import TITLE_CHARS
+        chat = new_chat()
+        chat.add_user_message("mot " * 60)
+        self.assertEqual(len(chat.title), TITLE_CHARS)
+        self.assertTrue(chat.title.endswith("mot…"), chat.title)
+        exact = new_chat()
+        exact.add_user_message("x" * TITLE_CHARS)
+        self.assertEqual(exact.title, "x" * TITLE_CHARS)
+
     def test_reply_is_stripped_and_attributed_to_agent(self):
         chat = new_chat()
         say(chat, ScriptedBackend(["  hello \n"]), "hi")

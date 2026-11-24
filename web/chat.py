@@ -105,7 +105,9 @@ class Chat(EventLog):
     @property
     def title(self) -> str:
         first = next((t.content for t in self.turns if t.role == USER_ROLE), "")
-        return first[:TITLE_CHARS]
+        if len(first) <= TITLE_CHARS:
+            return first
+        return first[:TITLE_CHARS - 1].rstrip() + "…"  # visibly cut, not silently
 
     def add_user_message(self, text: str) -> None:
         """Record the human's message and mark the chat busy; the caller then runs ChatRunner.reply."""

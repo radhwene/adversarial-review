@@ -266,6 +266,10 @@ legend { padding: 0; }
 .turn-body ul, .turn-body ol { margin: 0 0 var(--space-3); padding-left: var(--space-5); }
 .turn-body li { margin-bottom: var(--space-1); }
 .turn-body code { padding: 1px var(--space-1); border-radius: var(--r-sm); background: var(--code); font: var(--fs-sm) var(--mono); }
+.turn-body .md-table { margin: 0 0 var(--space-3); overflow-x: auto; }
+.turn-body table { border-collapse: collapse; font-size: var(--fs-sm); line-height: 1.4; }
+.turn-body th, .turn-body td { padding: var(--space-1) var(--space-2); border: 1px solid var(--l); text-align: left; vertical-align: top; }
+.turn-body th { background: var(--code); font-weight: 600; white-space: nowrap; }
 .turn-body pre { padding: var(--space-3); border-radius: var(--r); background: var(--code); overflow-x: auto; font-size: var(--fs-sm); line-height: 1.5; }
 .turn-body pre code { padding: 0; background: none; }
 /* long turns fold: fewer screens to scroll on a phone, full text one tap away */
@@ -530,10 +534,17 @@ let transcript = [], historyList = [];
 
 // ---- safe mini-markdown: escape FIRST, then add a few formatting tags ----
 function esc(s) { return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+const MD_ESCAPABLE = /\\([\\`*_|#\-+.!\[\]()])/g;   // CommonMark backslash escapes: \* shows a literal *
 function inline(s) {
-  return s.replace(/`([^`]+)`/g, "<code>$1</code>")
+  return s.replace(MD_ESCAPABLE, (_, c) => "&#" + c.charCodeAt(0) + ";")
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
           .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
           .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+const TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;   // |---|:--:| line under a table header
+function isTableRow(line) { return /^\s*\|.*\|\s*$/.test(line); }
+function tableCells(line) {
+  return line.trim().replace(/^\||\|$/g, "").replace(/\\\|/g, "&#124;").split("|").map((c) => c.trim());
 }
 function renderMarkdown(src) {
   const out = []; const lines = esc(src).split("\n"); let list = null, para = [];
@@ -545,6 +556,14 @@ function renderMarkdown(src) {
       flushPara(); flushList(); const code = [];
       while (++i < lines.length && !lines[i].startsWith("```")) code.push(lines[i]);
       out.push("<pre><code>" + code.join("\n") + "</code></pre>"); continue;
+    }
+    if (isTableRow(line) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+      flushPara(); flushList(); const head = tableCells(line), rows = [];
+      for (i += 2; i < lines.length && isTableRow(lines[i]); i++) rows.push(tableCells(lines[i]));
+      i--;
+      const tr = (cells, tag) => "<tr>" + cells.map((c) => `<${tag}>${inline(c)}</${tag}>`).join("") + "</tr>";
+      out.push(`<div class="md-table"><table><thead>${tr(head, "th")}</thead><tbody>${rows.map((r) => tr(r, "td")).join("")}</tbody></table></div>`);
+      continue;
     }
     let m;
     if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { flushPara(); flushList(); const n = Math.min(m[1].length + 1, 4); out.push(`<h${n}>${inline(m[2])}</h${n}>`); continue; }
@@ -1260,7 +1279,7 @@ async function sendChat(e) {
   } catch (err) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", "Serveur injoignable : " + err.message)); return; }
   if (!res.ok) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", data.error || ("HTTP " + res.status))); return; }
   chatLastText = text; $("chat-text").value = "";
-  if (first) { chatId = data.id; history.replaceState(null, "", "#c-" + chatId); setChatHeader(null, text.slice(0, 120)); }
+  if (first) { chatId = data.id; history.replaceState(null, "", "#c-" + chatId); setChatHeader(null, text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text); }
   setChatBusy(true);
   followChat(chatSeq + 1);
 }
