@@ -48,7 +48,10 @@ from auth import (DEFAULT_PROVIDERS, AuthManager, InvalidAuthCode, NoLoginInProg
                   UnknownProvider)
 from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
                       deepseek_key_store)
-from chat import Chat, ChatBusy, ChatConfig, ChatDeleted, ChatRunner, InvalidChatConfig, InvalidChatTitle  # noqa: E402
+from attachments import (IMAGE_NAME_PATTERN, MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE, Image,  # noqa: E402
+                         InvalidImage, media_type_of, parse_images)
+from chat import (Chat, ChatBusy, ChatConfig, ChatDeleted, ChatRunner, InvalidChatConfig,  # noqa: E402
+                  InvalidChatTitle, clean_chat_text)
 from engine import (Debate, DebateClosed, DebateConfig, DebateRunner, InvalidDebateConfig,  # noqa: E402
                     EventLog, InvalidUserMessage, TooManyUserMessages, clean_user_message)
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
@@ -62,6 +65,8 @@ STATIC_LOGO = os.path.join(HERE, "static", "logo.svg")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_BODY_BYTES = 16 * 1024
+# Chat messages carry base64 images (4/3 of their size): the larger limit applies to those routes only.
+MAX_CHAT_BODY_BYTES = MAX_IMAGES_PER_MESSAGE * (MAX_IMAGE_BYTES * 4 // 3 + 4) + MAX_BODY_BYTES
 MAX_ACTIVE_DEBATES = 2
 SSE_HEARTBEAT_SECONDS = 15
 AUTH_USER_ENV = "ADVR_USER"
@@ -104,6 +109,7 @@ _PROJECT_DEBATES_PATH = re.compile(r"^/api/projects/([^/]+)/debates$")
 _CHAT_EVENTS_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})/events$")
 _CHAT_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})$")
 _CHAT_MESSAGES_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})/messages$")
+_CHAT_FILE_PATH = re.compile(r"^/api/chats/([0-9a-f]{12})/files/(" + IMAGE_NAME_PATTERN + r")$")
 _PROJECT_CHATS_PATH = re.compile(r"^/api/projects/([^/]+)/chats$")
 _AUTH_ACTION_PATH = re.compile(r"^/api/auth/([a-z]+)/(login|code|logout|cancel)$")
 _KEY_ACTION_PATH = re.compile(r"^/api/keys/([a-z]+)/(save|clear)$")
@@ -252,32 +258,49 @@ class App:
             except OSError:
                 logger.exception("debate=%s could not be saved", debate.id)
 
-    def start_chat(self, config: ChatConfig, text: str) -> Chat:
+    def start_chat(self, config: ChatConfig, text: str, images: Sequence[Image] = ()) -> Chat:
         """Create a chat and send its first message (no empty chats on disk)."""
         config.validate(self.registry)
         if self.projects is not None and not self.projects.exists(ProjectStore.validate_name(config.project)):
             raise UnknownProject(config.project)
-        text = clean_user_message(text)
+        self._check_message(config.agent, text, images)
         chat = Chat(config=config)
         if self.projects is not None:
             chat.observers.append(self._chat_trace)
-        self.post_chat_message(chat, text)
+            chat.files_dir = self.projects.chat_files_dir(config.project, chat.id)
+        self.post_chat_message(chat, text, images)
         self.chats[chat.id] = chat
         return chat
 
-    def post_chat_message(self, chat: Chat, text: str) -> None:
-        """Record the message and start the reply in a thread. Raises UserMessageRejected subclasses
-        (ChatBusy while a reply runs), or OverflowError when no slot is free."""
-        text = clean_user_message(text)  # a bad message must never cost a slot
+    def _check_message(self, agent: str, text: str, images: Sequence[Image]) -> str:
+        """The cleaned text, or InvalidUserMessage (InvalidImage) before anything is stored or spent."""
+        if images and not self.registry[agent].supports_images:
+            raise InvalidImage(f"{agent} cannot read images; pick claude or codex")
+        if images and self.projects is None:
+            raise InvalidImage("images need a project folder on the server")
+        return clean_chat_text(text, bool(images))
+
+    def post_chat_message(self, chat: Chat, text: str, images: Sequence[Image] = ()) -> None:
+        """Store the images, record the message and start the reply in a thread. Raises
+        UserMessageRejected subclasses (ChatBusy while a reply runs), or OverflowError when no slot is free."""
+        text = self._check_message(chat.config.agent, text, images)  # a bad message must never cost a slot
         with chat._cond:  # busy check, slot and queueing as one step (same lesson as debates)
+            if chat.deleted:
+                raise ChatDeleted("this chat was deleted")
             if chat.state == "busy":
                 raise ChatBusy("the agent is still answering; wait for its reply")
             if not self.slots.acquire(blocking=False):
                 raise OverflowError("too many agents running")
+            created: List[str] = []
             try:
-                chat.add_user_message(text)
+                for image in images:  # before the message: its first save already names them
+                    if self.projects.save_chat_file(chat.config.project, chat.id, image.name, image.data):
+                        created.append(image.name)
+                chat.add_user_message(text, [image.name for image in images])
             except BaseException:
                 self.slots.release()
+                for name in created:  # the message was refused: keep no orphan image
+                    os.remove(os.path.join(chat.files_dir, name))
                 raise
         threading.Thread(target=self._run_chat, args=(chat,), name=f"chat-{chat.id}", daemon=True).start()
 
@@ -325,6 +348,7 @@ class App:
             if snap is not None:
                 loaded = Chat.from_snapshot(snap)  # a busy snapshot comes back idle + reply_failed "interrupted"
                 loaded.observers.append(self._chat_trace)
+                loaded.files_dir = self.projects.chat_files_dir(loaded.config.project, loaded.id)
                 if snap.get("state") != loaded.state:
                     self._save_chat(loaded)  # persist that failure so event seqs stay stable across reloads
                 chat = self.chats.setdefault(chat_id, loaded)
@@ -422,7 +446,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-cache")  # phones must pick up a new UI after a rebuild
                 self.send_header("Content-Security-Policy",
-                                 "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                 "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; "
                                  "script-src 'self' 'unsafe-inline'; connect-src 'self'")
                 self.end_headers()
                 self.wfile.write(body)
@@ -455,6 +479,10 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if m:
                 self._stream(app.get_chat(m.group(1)), query)
                 return
+            m = _CHAT_FILE_PATH.match(path)
+            if m:
+                self._chat_file(m.group(1), m.group(2))
+                return
             m = _CHAT_PATH.match(path)
             chat = app.get_chat(m.group(1)) if m else None
             if chat is not None:
@@ -483,7 +511,28 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     return
             self._error(HTTPStatus.NOT_FOUND, "not found")
 
-        def _read_json_body(self) -> Optional[Dict]:
+        def _chat_file(self, chat_id: str, name: str) -> None:
+            """An image of a chat. The name matched IMAGE_NAME_PATTERN (no path separator can get in)."""
+            chat = app.get_chat(chat_id)
+            if chat is None or chat.files_dir is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown chat")
+                return
+            try:
+                with open(os.path.join(chat.files_dir, name), "rb") as fh:
+                    body = fh.read()
+            except FileNotFoundError:
+                self._error(HTTPStatus.NOT_FOUND, "unknown file")
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", media_type_of(name))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            self.send_header("Cache-Control", "private, max-age=31536000, immutable")  # name = hash of the bytes
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _read_json_body(self, max_bytes: int = MAX_BODY_BYTES) -> Optional[Dict]:
             """Parse a JSON object body, or send the error response and return None."""
             # CSRF: only application/json is accepted. Cross-origin JSON needs a CORS preflight,
             # which this server never answers, so other sites cannot start (paid) debates.
@@ -492,8 +541,8 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
                 return None
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0 or length > MAX_BODY_BYTES:
-                self._error(HTTPStatus.BAD_REQUEST, f"body must be 1..{MAX_BODY_BYTES} bytes")
+            if length <= 0 or length > max_bytes:
+                self._error(HTTPStatus.BAD_REQUEST, f"body must be 1..{max_bytes} bytes")
                 return None
             try:
                 body = json.loads(self.rfile.read(length))
@@ -717,7 +766,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 if chat is None:
                     self._error(HTTPStatus.NOT_FOUND, "unknown chat")
                     return
-            body = self._read_json_body()
+            body = self._read_json_body(MAX_CHAT_BODY_BYTES)
             if body is None:
                 return
             text = body.get("text")
@@ -725,6 +774,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self._error(HTTPStatus.BAD_REQUEST, "text must be a string")
                 return
             try:
+                images = parse_images(body.get("images"))
                 if chat is None:
                     config = ChatConfig(agent=str(body["agent"]), project=str(body.get("project", DEFAULT_PROJECT)),
                                         model=body.get("model") or None, effort=body.get("effort") or None)
@@ -733,9 +783,9 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                     self._error(HTTPStatus.CONFLICT, agent + " non connecté : ouvre « Comptes LLM » et clique Connecter")
                     return
                 if chat is None:
-                    chat = app.start_chat(config, text)
+                    chat = app.start_chat(config, text, images)
                 else:
-                    app.post_chat_message(chat, text)
+                    app.post_chat_message(chat, text, images)
             except KeyError as exc:
                 self._error(HTTPStatus.BAD_REQUEST, f"invalid request: missing {exc}")
                 return
@@ -754,9 +804,13 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             except (TooManyUserMessages, OverflowError) as exc:
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
                 return
-            # length only: the message is user content, not log material
-            logger.info("chat=%s message chars=%d agent=%s turns=%d", chat.id, len(text.strip()),
-                        chat.config.agent, len(chat.turns))
+            except OSError:  # the traceback names the path, never the image
+                logger.exception("chat could not store an image")
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "could not store the image on the server")
+                return
+            # length and count only: the message is user content, not log material
+            logger.info("chat=%s message chars=%d images=%d agent=%s turns=%d", chat.id, len(text.strip()),
+                        len(images), chat.config.agent, len(chat.turns))
             self._json(HTTPStatus.ACCEPTED, {"id": chat.id})
 
         def _stream(self, log: Optional[EventLog], query: str) -> None:
