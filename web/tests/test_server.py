@@ -642,6 +642,18 @@ class ChatServerTests(unittest.TestCase):
         resp, raw = self.request("PATCH", f"/api/chats/{chat_id}", {"title": ""})
         self.assertEqual((resp.status, json.loads(raw)["title"]), (200, "Retiens 42."))
 
+    def test_chat_list_spans_every_project(self):
+        self.store.create("autre")
+        first = self.new_chat("dans default")
+        self.wait_idle(first)
+        resp, raw = self.request("POST", "/api/chats", {"agent": "mock", "project": "autre", "text": "dans autre"})
+        second = json.loads(raw)["id"]
+        self.wait_idle(second)
+        resp, raw = self.request("GET", "/api/chats")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual([(c["id"], c["project"], c["title"]) for c in json.loads(raw)],
+                         [(second, "autre", "dans autre"), (first, "default", "dans default")])
+
     def test_rename_errors(self):
         chat_id = self.new_chat()
         self.wait_idle(chat_id)

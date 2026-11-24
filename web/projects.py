@@ -144,12 +144,12 @@ class ProjectStore:
             logger.info("project created: %s", path)
         return not existed
 
+    def names(self) -> List[str]:
+        return [n for n in sorted(os.listdir(self.root))
+                if PROJECT_NAME_RE.match(n) and os.path.isdir(os.path.join(self.root, n))]
+
     def list(self) -> List[Dict]:
-        out = []
-        for name in sorted(os.listdir(self.root)):
-            if PROJECT_NAME_RE.match(name) and os.path.isdir(os.path.join(self.root, name)):
-                out.append({"name": name, "debates": len(self.debate_summaries(name))})
-        return out
+        return [{"name": n, "debates": len(self.debate_summaries(n))} for n in self.names()]
 
     def append_event(self, project: str, debate_id: str, algorithm: str, question: str, event: Dict) -> None:
         if not self.exists(project):
@@ -221,8 +221,14 @@ class ProjectStore:
             if not snap.get("turns"):
                 continue  # first message failed and was handed back: nothing to reopen
             cfg = snap.get("config", {})
-            out.append({"id": snap.get("id"), "created_at": snap.get("created_at"), "title": snap.get("title", ""),
+            out.append({"id": snap.get("id"), "project": project, "created_at": snap.get("created_at"),
+                        "title": snap.get("title", ""),
                         "agent": cfg.get("agent"), "model": cfg.get("model"), "messages": len(snap.get("turns", []))})
+        return sorted(out, key=lambda s: s.get("created_at") or 0, reverse=True)
+
+    def all_chat_summaries(self) -> List[Dict]:
+        """Every project's chats in one list, newest first: the Conversations tab has no project picker."""
+        out = [c for name in self.names() for c in self.chat_summaries(name)]
         return sorted(out, key=lambda s: s.get("created_at") or 0, reverse=True)
 
     def debate_summaries(self, project: str) -> List[Dict]:

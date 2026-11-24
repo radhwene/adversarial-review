@@ -16,6 +16,7 @@ Routes:
     POST /api/debates/<id>/messages {"text"}  the human's remark (bonus round after the verdict)
     POST /api/chats {"agent", "model"?, "effort"?, "project"?, "text"}  new chat + first message -> 202 {"id"}
     POST /api/chats/<id>/messages {"text"}    next message (409 while the agent is answering)
+    GET  /api/chats                 saved chats of every project, newest first
     GET  /api/chats/<id>            JSON snapshot
     PATCH /api/chats/<id> {"title"}  rename ("" = back to the first message) -> 200 snapshot
     DELETE /api/chats/<id>          forget it (409 while the agent is answering) -> 204
@@ -467,6 +468,9 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             if app.projects is not None:
                 if path == "/api/projects":
                     self._json(HTTPStatus.OK, app.projects.list())
+                    return
+                if path == "/api/chats":
+                    self._json(HTTPStatus.OK, app.projects.all_chat_summaries())
                     return
                 m = _PROJECT_DEBATES_PATH.match(path) or _PROJECT_CHATS_PATH.match(path)
                 if m:
