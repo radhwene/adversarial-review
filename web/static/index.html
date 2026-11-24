@@ -280,9 +280,7 @@ legend { padding: 0; }
 .turn.user { --c: var(--ink); --w: var(--thesis-wash); --l: var(--thesis-line); align-self: center; max-width: 80%; }
 .turn.user.queued { opacity: .7; }
 .turn.user .turn-body { border-radius: var(--r-lg); white-space: pre-wrap; }
-.modes { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: var(--space-4); border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--sunken); }
-.modes button { min-height: 36px; padding: 0 var(--space-4); border: 0; border-radius: var(--r-pill); background: transparent; color: var(--ink-2); font: inherit; cursor: pointer; }
-.modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.chat-actions { margin-bottom: var(--space-4); }
 .turn.assistant { --c: var(--thesis); align-self: flex-start; }
 .chat-pick { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
 .chat-pick .tune { grid-column: 1; }
@@ -311,8 +309,9 @@ legend { padding: 0; }
   .shell { display: block; min-height: 0; }
   .rail { position: static; height: auto; overflow: visible; padding: var(--space-5) var(--space-4) var(--space-6); border-right: 0; background: transparent; gap: var(--space-6); }
   body { padding-bottom: calc(var(--tabbar-h) + var(--safe-b)); }
-  body[data-tab="arena"] .rail, body[data-tab="list"] main, body[data-tab="accounts"] main { display: none; }
-  body[data-tab="list"] #pane-accounts, body[data-tab="accounts"] #pane-list { display: none; }
+  body[data-tab="arena"] .rail, body[data-tab="chats"] main, body[data-tab="list"] main, body[data-tab="accounts"] main { display: none; }
+  body[data-tab="chats"] :is(#pane-list, #pane-accounts), body[data-tab="list"] :is(#pane-chats, #pane-accounts),
+  body[data-tab="accounts"] :is(#pane-project, #pane-chats, #pane-list) { display: none; }
   main { padding: var(--space-5) var(--space-4) var(--space-8); }
   .tabbar { position: fixed; inset: auto 0 0 0; z-index: var(--z-nav); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     height: calc(var(--tabbar-h) + var(--safe-b)); padding-bottom: var(--safe-b); background: var(--surface); border-top: 1px solid var(--line); }
@@ -334,7 +333,7 @@ legend { padding: 0; }
   .turn { max-width: 94%; }
   .verdict { grid-template-columns: 1fr; justify-items: start; padding: var(--space-4); }
   .stamp { grid-row: auto; }
-  .top #new-debate .lbl { display: none; }
+  .top #new-top .lbl { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
@@ -366,13 +365,12 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
     <span class="wordmark">llm<span>arena</span></span>
   </a>
   <div class="agents" id="backend-status">Chargement des agents…</div>
-  <button type="button" class="btn primary" id="new-debate" hidden><svg class="i" aria-hidden="true"><use href="#i-new"/></svg><span class="lbl">Nouveau débat</span></button>
+  <button type="button" class="btn primary" id="new-top"><svg class="i" aria-hidden="true"><use href="#i-new"/></svg><span class="lbl" id="new-top-label">Nouvelle conversation</span></button>
 </header>
 
 <div class="shell">
-  <aside class="rail" aria-label="Projets, débats et comptes">
-    <section class="pane" id="pane-list" aria-labelledby="history-title">
-      <div class="pane-head"><h2 class="pane-title" id="history-title">Débats</h2><span class="summary" id="docket-summary">Projet</span></div>
+  <aside class="rail" aria-label="Projets, conversations, débats et comptes">
+    <section class="pane" id="pane-project" aria-label="Projet">
       <div>
         <label class="label" for="project">Projet</label>
         <div class="proj">
@@ -387,11 +385,20 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
       </form>
       <div class="np-err" id="np-error" role="alert" hidden></div>
       <div class="path" id="project-path"></div>
+    </section>
+    <section class="pane" id="pane-chats" aria-labelledby="chats-title">
+      <div class="pane-head"><h2 class="pane-title" id="chats-title">Conversations</h2>
+        <button type="button" class="btn" id="chats-new"><svg class="i" aria-hidden="true"><use href="#i-new"/></svg>Nouvelle</button></div>
+      <label class="sr-only" for="chat-filter">Chercher une conversation</label>
+      <input class="field" type="search" id="chat-filter" placeholder="Chercher une conversation…" autocomplete="off">
+      <nav class="docket" id="chat-history" aria-labelledby="chats-title"></nav>
+    </section>
+    <section class="pane" id="pane-list" aria-labelledby="history-title">
+      <div class="pane-head"><h2 class="pane-title" id="history-title">Débats</h2><span class="summary" id="docket-summary">Projet</span></div>
+      <button type="button" class="btn" id="debates-new"><svg class="i" aria-hidden="true"><use href="#i-new"/></svg>Nouveau débat</button>
       <label class="sr-only" for="history-filter">Filtrer les débats</label>
       <input class="field" type="search" id="history-filter" placeholder="Filtrer par question ou agent…" autocomplete="off">
       <nav class="docket" id="history" aria-labelledby="history-title"></nav>
-      <h3 class="eyebrow docket-sub" id="chats-title">Questions directes</h3>
-      <nav class="docket" id="chat-history" aria-labelledby="chats-title"></nav>
     </section>
     <section class="pane" id="pane-accounts" aria-labelledby="acc-title">
       <div class="pane-head"><h2 class="pane-title" id="acc-title">Comptes LLM</h2></div>
@@ -401,12 +408,8 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
   </aside>
 
   <main id="main" tabindex="-1">
-    <div class="col"><div class="modes" id="modes" role="group" aria-label="Mode">
-      <button type="button" data-mode="form" aria-pressed="true">Débat</button>
-      <button type="button" data-mode="chat" aria-pressed="false">Question directe</button>
-    </div></div>
     <!-- new debate -->
-    <section class="col" id="saisine">
+    <section class="col" id="saisine" hidden>
       <p class="eyebrow">Nouveau débat</p>
       <h1 class="page-title">Quelle question mettre à l'épreuve ?</h1>
       <p class="lede">Un agent défend une réponse, un autre l'attaque round après round, un juge tranche. Chaque tour s'affiche dès qu'il est écrit (10 à 60 s par tour).</p>
@@ -481,9 +484,13 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
     </section>
 
     <!-- direct chat with one agent -->
-    <section class="col" id="chat" hidden>
-      <p class="eyebrow" id="chat-no">Question directe</p>
+    <section class="col" id="chat">
+      <p class="eyebrow" id="chat-no">Nouvelle conversation</p>
       <h1 class="page-title" id="chat-title">Parle à un seul agent</h1>
+      <div class="cluster chat-actions" id="chat-actions" hidden>
+        <button type="button" class="btn ghost" id="chat-rename">Renommer</button>
+        <button type="button" class="btn ghost" id="chat-delete">Supprimer</button>
+      </div>
       <div class="chat-pick" id="chat-pick">
         <select class="field" id="chat-agent" aria-label="Agent"></select>
         <div class="tune" id="chat-agent-tune" hidden><select class="field" id="chat-agent-model" aria-label="Modèle" title="Modèle"></select><select class="field" id="chat-agent-effort" aria-label="Effort de réflexion" title="Effort de réflexion"></select></div>
@@ -494,7 +501,7 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
         <textarea class="field" id="chat-text" maxlength="4000" placeholder="Ex. : « Explique-moi les index B-tree. »"></textarea>
         <div class="row">
           <small id="chat-hint" aria-live="polite">L'agent garde toute la conversation en mémoire. <kbd>Ctrl</kbd> + <kbd>Entrée</kbd> pour envoyer.</small>
-          <button type="button" class="btn ghost" id="chat-new" hidden>Nouvelle question</button>
+          <button type="button" class="btn ghost" id="chat-new" hidden>Nouvelle conversation</button>
           <button type="submit" class="btn primary" id="chat-send">Envoyer</button>
         </div>
       </form>
@@ -504,8 +511,8 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
 <button type="button" class="btn primary follow" id="follow" hidden><svg class="i" aria-hidden="true"><use href="#i-down"/></svg>Suivre le tour en cours</button>
 
 <nav class="tabbar" id="tabbar" aria-label="Sections">
+  <button type="button" data-tab="chats" aria-current="page"><svg class="i" aria-hidden="true"><use href="#i-arena"/></svg>Conversations</button>
   <button type="button" data-tab="list"><svg class="i" aria-hidden="true"><use href="#i-list"/></svg>Débats</button>
-  <button type="button" data-tab="arena" aria-current="page"><svg class="i" aria-hidden="true"><use href="#i-arena"/></svg>Arène</button>
   <button type="button" data-tab="accounts" id="tab-accounts"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Comptes<i class="badge" id="accounts-badge" hidden></i></button>
 </nav>
 
@@ -523,7 +530,7 @@ const EXAMPLES = [
 const NEAR_BOTTOM_PX = 240;      // autoscroll only if the reader is already near the end
 const COPY_FEEDBACK_MS = 2000;
 const FOLD_CHARS = 700;         // turns longer than this start folded behind "Tout lire"
-const TABS = ["list", "arena", "accounts"];
+const TABS = ["chats", "list", "arena", "accounts"];  // "arena" = the open chat or debate (no button of its own)
 const MIN_ROUNDS = 1, MAX_ROUNDS = 5, DEFAULT_ROUNDS = 3;
 const MAX_BONUS_ROUNDS = 3;      // engine.MAX_BONUS_ROUNDS: remarks after the verdict reopen the debate this many times
 const BONUS_STEPS = 3;          // proposer, critic, judge
@@ -586,22 +593,25 @@ function nearBottom() { return window.innerHeight + window.scrollY >= document.d
 
 // ---------- views ----------
 // Below 1025 px only one pane shows at a time (CSS keys on body[data-tab]); wider screens ignore it.
+let currentView = "chat";
 function setTab(tab) {
   if (!TABS.includes(tab)) return;
   document.body.dataset.tab = tab;
+  // the open view lights up the list it belongs to: a chat under Conversations, a debate under Débats
+  const lit = tab === "arena" ? (currentView === "chat" ? "chats" : "list") : tab;
   for (const b of $("tabbar").querySelectorAll("button")) {
-    if (b.dataset.tab === tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    if (b.dataset.tab === lit) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }
 }
 
 function showView(name) {
+  currentView = name;
   setTab("arena");
   if (name !== "chat") closeChatSource();
   $("chat").hidden = name !== "chat";
-  for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === name));
   $("saisine").hidden = name !== "form";
   $("case").hidden = name !== "case";
-  $("new-debate").hidden = name !== "case";
+  $("new-top-label").textContent = name === "chat" ? "Nouvelle conversation" : "Nouveau débat";
   if (name !== "case") $("follow").hidden = true;
 }
 
@@ -877,9 +887,9 @@ function follow(id, from) {
 async function resumeFromHash() {
   const id = location.hash.slice(1);
   if (/^c-[0-9a-f]{12}$/.test(id)) { if (source) { source.close(); source = null; } live = false; setRunning(false); markCurrent(); await resumeChat(id.slice(2)); return; }
-  if (!/^[0-9a-f]{12}$/.test(id)) { showView("form"); markCurrent(); return; }
+  if (!/^[0-9a-f]{12}$/.test(id)) { if (chatId !== null || currentView !== "chat") newChat(); else showView("chat"); markCurrent(); return; }
   const res = await fetch("api/debates/" + id);
-  if (!res.ok) { history.replaceState(null, "", location.pathname); showView("form"); return; }
+  if (!res.ok) { history.replaceState(null, "", location.pathname); newChat(); return; }
   const snap = await res.json();
   if (source) { source.close(); source = null; }
   markCurrent();
@@ -1183,6 +1193,8 @@ function setChatBusy(busy) {
   const locked = busy || chatId !== null;  // agent and options are fixed once the chat exists
   for (const id of ["chat-agent", "chat-agent-model", "chat-agent-effort"]) $(id).disabled = locked;
   $("chat-new").hidden = chatId === null || busy;
+  $("chat-actions").hidden = chatId === null;
+  $("chat-delete").disabled = busy;  // the server refuses (409) while the agent answers
   const p = $("chat-pending");
   if (!busy) { if (p) p.remove(); clearInterval(chatTimer); return; }
   if (p) return;
@@ -1210,7 +1222,7 @@ function addChatTurn(turn) {
 
 function setChatHeader(snapOrCfg, title) {
   const cfg = snapOrCfg;
-  $("chat-no").textContent = chatId ? "Question directe n° " + chatId : "Question directe";
+  $("chat-no").textContent = chatId ? "Conversation n° " + chatId : "Nouvelle conversation";
   $("chat-title").textContent = title || "Parle à un seul agent";
   document.title = (title ? title.slice(0, 60) + " · " : "") + "llmarena";
   if (cfg && cfg.agent && [...$("chat-agent").options].some((o) => o.value === cfg.agent)) {
@@ -1222,6 +1234,8 @@ function handleChat(ev) {
   if (ev.type === "turn_completed") {
     addChatTurn(ev.turn);
     if (ev.turn.role !== "user") { closeChatSource(); setChatBusy(false); loadChatHistory($("project").value); }
+  } else if (ev.type === "chat_renamed") {
+    setChatHeader(null, ev.title);
   } else if (ev.type === "reply_failed") {
     closeChatSource(); setChatBusy(false);
     const users = $("chat-log").querySelectorAll(".turn.user"); users[users.length - 1]?.remove();  // the server dropped it too
@@ -1284,21 +1298,50 @@ async function sendChat(e) {
   followChat(chatSeq + 1);
 }
 
+async function renameChat() {
+  if (chatId === null) return;
+  const title = prompt("Nouveau nom (vide = reprendre le premier message) :", $("chat-title").textContent);
+  if (title === null) return;  // cancelled
+  const res = await fetch("api/chats/" + chatId, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
+  const data = await res.json();
+  if (!res.ok) { $("chat-log").append(el("div", "banner err", data.error || ("HTTP " + res.status))); return; }
+  setChatHeader(null, data.title); loadChatHistory($("project").value);
+}
+
+async function deleteChat() {
+  if (chatId === null || chatBusy) return;
+  if (!confirm("Supprimer définitivement cette conversation ?")) return;
+  const res = await fetch("api/chats/" + chatId, { method: "DELETE" });
+  if (!res.ok && res.status !== 404) {  // 404: already gone, same end state
+    const data = await res.json().catch(() => ({}));
+    $("chat-log").append(el("div", "banner err", data.error || ("HTTP " + res.status))); return;
+  }
+  newChat(); loadChatHistory($("project").value); setTab("chats");
+}
+
 let chatList = [];
 async function loadChatHistory(project) {
   if (!project) return;
   const res = await fetch("api/projects/" + encodeURIComponent(project) + "/chats");
   if (!res.ok) return;
   chatList = await res.json();
+  renderChats();
+}
+
+// Client-side search, like the debates filter: the list is already loaded per project.
+function renderChats() {
+  const q = $("chat-filter").value.trim().toLowerCase();
+  const list = q ? chatList.filter((c) => [c.title, c.agent, c.model || ""].join(" ").toLowerCase().includes(q)) : chatList;
   const box = $("chat-history"); box.replaceChildren();
-  for (const c of chatList) {
+  for (const c of list) {
     const a = el("a"); a.href = "#c-" + c.id; a.dataset.id = "c-" + c.id;
     a.append(el("span", "q", c.title || "(sans titre)"));
     const m = el("span", "m");
     m.append(el("time", null, fmtDate(c.created_at)), el("span", null, c.agent + (c.model ? " · " + c.model : "")), el("span", null, c.messages + " msg"));
     a.append(m); box.append(a);
   }
-  if (!chatList.length) box.append(el("div", "docket-empty", "Aucune question directe dans ce projet."));
+  if (!chatList.length) box.append(el("div", "docket-empty", "Aucune conversation dans ce projet."));
+  else if (!list.length) box.append(el("div", "docket-empty", "Aucune conversation ne correspond."));
   markCurrent();
 }
 
@@ -1334,12 +1377,13 @@ $("tabbar").addEventListener("click", (e) => {
 });
 // Same hash as the open debate fires no hashchange: still switch the phone to the arena.
 $("history").addEventListener("click", (e) => { if (e.target.closest("a")) setTab("arena"); });
-$("new-debate").addEventListener("click", () => newDebate(null));
+$("new-top").addEventListener("click", () => { if (currentView === "chat") newChat(); else newDebate(null); });
+$("debates-new").addEventListener("click", () => newDebate(null));
+$("chats-new").addEventListener("click", newChat);
+$("chat-filter").addEventListener("input", renderChats);
+$("chat-rename").addEventListener("click", renameChat);
+$("chat-delete").addEventListener("click", deleteChat);
 $("chat-history").addEventListener("click", (e) => { if (e.target.closest("a")) setTab("arena"); });
-$("modes").addEventListener("click", (e) => {
-  const b = e.target.closest("button[data-mode]"); if (!b) return;
-  if (b.dataset.mode === "chat") { if (chatId) location.hash = "c-" + chatId; else newChat(); } else newDebate(null);
-});
 $("chat-form").addEventListener("submit", sendChat);
 $("chat-new").addEventListener("click", newChat);
 $("chat-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("chat-form").requestSubmit(); } });

@@ -62,7 +62,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn(b"<title>llmarena</title>", raw)
         self.assertEqual(resp.getheader("Cache-Control"), "no-cache")
-        self.assertIn(b'data-mode="chat"', raw)
+        self.assertIn(b'data-tab="chats"', raw)  # chat-first: Conversations tab
+        self.assertNotIn(b'data-mode=', raw)
         resp, raw = self.request("GET", "/api/backends")
         self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
 
