@@ -97,7 +97,7 @@ Under each party's agent select, two small selects: **modèle** and **effort de 
 | gemini | auto, pro, flash, flash-lite | none | `-m X` |
 | deepseek | deepseek-chat, deepseek-reasoner | none | `"model"` in the API body |
 
-- API: `POST /api/debates` takes `options: {"proposer": {"model": "opus", "effort": "high"}, ...}`. `GET /api/backends` lists `models` and `efforts` per agent.
+- API: `POST /api/debates` takes `options: {"proposer": {"model": "opus", "effort": "high"}, ...}`. `GET /api/backends` lists `models`, `efforts` and `images` (whether the agent reads images) per agent.
 - Allowlist only: an unknown seat, key or value gets a 400 before any CLI runs, so a value never reaches an argv unchecked.
 - The choice is stored per seat and agent in the browser, shown in the case header, and kept in the debate JSON. "Relancer" reuses it.
 - Verified 2026-11-11 over HTTPS: two debates, claude(haiku, low) / codex(low) / claude(sonnet, medium), 31 s and 34 s, critic ACCEPT, verdict. The logs show the flags on every turn.
@@ -149,6 +149,7 @@ No dependencies beyond Python ≥ 3.9 and the agent CLIs you want to use
   - **CSRF:** `POST` only accepts `Content-Type: application/json` (415 otherwise). A cross-origin JSON request needs a CORS preflight, and the server never answers one, so another website cannot start debates on your account through a `text/plain` form or `no-cors` fetch.
   - **DNS rebinding:** every request needs a `Host` of `127.0.0.1`, `localhost`, `::1` or the `--host` you passed (403 otherwise). A rebound attacker page therefore cannot read your transcripts or SSE streams.
 - At most 2 debates run at once (HTTP 429 beyond that). Bodies are capped at 16 KB, questions at 4000 chars, and rounds at 1–5.
+- Chat images: `POST /api/chats` and `/api/chats/<id>/messages` take `images: [base64, ...]`, at most 4 per message and 5 MB each (these two routes accept a bigger body for that). The type comes from the file's magic bytes (PNG, JPEG, GIF, WebP), never from the client. Only claude and codex read images; other agents get a 400. Files are stored as `chats/<id>.files/<sha256>.<ext>`, served from `GET /api/chats/<id>/files/<sha256>.<ext>` with `nosniff` and a sandbox CSP, and deleted with the chat. The browser re-encodes each photo to JPEG (long edge 1568 px) before upload, which drops EXIF/GPS. A reply sends the 4 newest images; older ones stay in the history as `[image N]`.
 - Model output is HTML-escaped before the mini-markdown renderer runs. A CSP restricts the page to same-origin.
 
 ## Tests
