@@ -344,6 +344,13 @@ class ImageServerTests(unittest.TestCase):
         resp, _ = self.request("GET", "/")
         self.assertIn("img-src 'self' blob:;", resp.getheader("Content-Security-Policy"))
 
+    def test_page_has_the_attach_control(self):
+        _, raw = self.request("GET", "/")
+        self.assertIn(b'<input type="file" id="chat-file" accept="image/*" multiple hidden>', raw)
+        self.assertIn(b"IMAGE_EDGE = 1568", raw)  # the canvas re-encode that strips EXIF
+        backends = json.loads(self.request("GET", "/api/backends")[1])
+        self.assertEqual({n: b["images"] for n, b in backends.items()}, {"mock": True, "blind": False})
+
 
 if __name__ == "__main__":
     unittest.main()

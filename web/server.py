@@ -469,7 +469,8 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 return
             if path == "/api/backends":
                 self._json(HTTPStatus.OK, {name: {"available": b.available(), "models": list(b.models),
-                                                   "efforts": list(b.efforts)} for name, b in app.registry.items()})
+                                                   "efforts": list(b.efforts), "images": b.supports_images}
+                                  for name, b in app.registry.items()})
                 return
             m = _EVENTS_PATH.match(path)
             if m:

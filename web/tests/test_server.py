@@ -72,7 +72,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn(b'data-tab="chats"', raw)  # chat-first: Conversations tab
         self.assertNotIn(b'data-mode=', raw)
         resp, raw = self.request("GET", "/api/backends")
-        self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": []}})
+        self.assertEqual(json.loads(raw), {"mock": {"available": True, "models": [], "efforts": [], "images": True}})
 
     def test_favicon_is_the_logo_svg(self):
         resp, raw = self.request("GET", "/favicon.svg")

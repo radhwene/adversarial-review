@@ -297,6 +297,13 @@ legend { padding: 0; }
 .remark textarea { min-height: 72px; padding: var(--space-2) var(--space-3); border-radius: var(--r); resize: vertical; line-height: 1.5; }
 .remark .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .remark small { color: var(--ink-3); font-size: var(--fs-sm); }
+.thumbs, .turn-images { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.thumb { position: relative; width: 72px; height: 72px; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; border: 1px solid var(--line); border-radius: var(--r); }
+.thumb button { position: absolute; top: -10px; right: -10px; width: 32px; height: 32px; border: 1px solid var(--line-strong); border-radius: 50%;
+  background: var(--surface); color: var(--ink); font-size: var(--fs-sm); line-height: 1; cursor: pointer; }
+.turn-images { margin-bottom: var(--space-2); }
+.turn-images img { display: block; max-width: 120px; max-height: 120px; border: 1px solid var(--line); border-radius: var(--r); }
 .pending .turn-body { min-width: 220px; color: var(--ink-3); font-size: var(--fs-sm); }
 .writing { display: flex; align-items: center; gap: var(--space-2); }
 .writing i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); animation: blink 1.2s ease-in-out infinite; }
@@ -520,9 +527,12 @@ NAV: < 1025 px une seule vue à la fois via la barre du bas (Débats, Arène, Co
       <form class="remark" id="chat-form" autocomplete="off">
         <label for="chat-text"><b>Ton message</b></label>
         <textarea class="field" id="chat-text" maxlength="4000" placeholder="Ex. : « Explique-moi les index B-tree. »"></textarea>
+        <div class="thumbs" id="chat-thumbs" hidden></div>
+        <input type="file" id="chat-file" accept="image/*" multiple hidden>
         <div class="row">
           <small id="chat-hint" aria-live="polite">L'agent garde toute la conversation en mémoire. <kbd>Ctrl</kbd> + <kbd>Entrée</kbd> pour envoyer.</small>
           <button type="button" class="btn ghost" id="chat-new" hidden>Nouvelle conversation</button>
+          <button type="button" class="btn" id="chat-attach" title="Joindre une image (4 max.)" aria-label="Joindre une image">📎 Image</button>
           <button type="submit" class="btn primary" id="chat-send">Envoyer</button>
         </div>
       </form>
@@ -1007,7 +1017,7 @@ async function loadBackends() {
     for (const n of names) { const o = el("option", null, n + (backends[n].available ? "" : " (indisponible)")); o.value = n; o.disabled = !backends[n].available; sel.append(o); }
     const pick = [current, localStorageGet("role-chat-agent"), "claude"].find((n) => n && backends[n]?.available);
     const keepTune = current && current === (pick || "mock") ? seatOptions("chat-agent") : undefined;
-    sel.value = pick || "mock"; fillTune("chat-agent", keepTune);
+    sel.value = pick || "mock"; fillTune("chat-agent", keepTune); syncAttach();
   }
   const box = $("backend-status"); box.replaceChildren();
   for (const n of names) {
@@ -1212,6 +1222,7 @@ function closeChatSource() { if (chatSource) { chatSource.close(); chatSource = 
 function setChatBusy(busy) {
   chatBusy = busy;
   $("chat-send").disabled = busy; $("chat-send").textContent = busy ? "Réponse en cours…" : "Envoyer";
+  syncAttach();
   const locked = busy || chatId !== null;  // agent and options are fixed once the chat exists
   for (const id of ["chat-agent", "chat-agent-model", "chat-agent-effort"]) $(id).disabled = locked;
   $("chat-new").hidden = chatId === null || busy;
@@ -1240,6 +1251,15 @@ function addChatTurn(turn, replay = false) {
   card.append(head);
   const body = el("div", "turn-body");
   if (user) body.textContent = turn.content; else body.innerHTML = renderMarkdown(turn.content); // escaped in renderMarkdown
+  if (turn.images?.length) {  // names are sha256.ext, checked by the server before it stored them
+    const row = el("div", "turn-images");
+    for (const name of turn.images) {
+      const src = "api/chats/" + chatId + "/files/" + name;
+      const a = el("a"); a.href = src; a.target = "_blank"; a.rel = "noopener";
+      const img = el("img"); img.src = src; img.alt = "Image jointe"; img.loading = "lazy"; a.append(img); row.append(a);
+    }
+    body.prepend(row);
+  }
   card.append(body);
   const p = $("chat-pending"); if (p) p.before(card); else $("chat-log").append(card);
   if (!user && !replay) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1285,6 +1305,7 @@ function handleChat(ev) {
     closeChatSource(); setChatBusy(false);
     const users = $("chat-log").querySelectorAll(".turn.user"); users[users.length - 1]?.remove();  // the server dropped it too
     if (!$("chat-text").value) $("chat-text").value = chatLastText;
+    if (!chatImages.length) { chatImages = chatLastImages; chatLastImages = []; renderThumbs(); }
     $("chat-log").append(el("div", "banner err", "Pas de réponse (" + ev.kind + ") : " + ev.message + ". Ton message est remis dans la zone de saisie."));
   }
 }
@@ -1306,6 +1327,7 @@ function followChat(from) {
 
 function newChat() {
   closeChatSource(); chatId = null; chatSeq = -1; chatLastText = "";
+  dropImages(chatImages); dropImages(chatLastImages); chatImages = []; chatLastImages = []; renderThumbs();
   $("chat-log").replaceChildren(); $("chat-text").value = "";
   history.replaceState(null, "", location.pathname);
   setChatHeader(null, ""); setChatBusy(false);
@@ -1325,12 +1347,60 @@ async function resumeChat(id) {
   window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
 }
 
+// Images: each photo is redrawn on a canvas (long edge 1568 px, the most Claude uses) and re-encoded as
+// JPEG before upload. That keeps uploads small on a phone connection and drops EXIF, GPS included.
+const MAX_CHAT_IMAGES = 4, IMAGE_EDGE = 1568, JPEG_QUALITY = 0.85;
+let chatImages = [], chatLastImages = [], imagesPending = 0;  // {b64, url}; chatLastImages come back if the reply fails
+
+async function shrinkImage(file) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const scale = Math.min(1, IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);  // transparent PNG -> white, not black, in JPEG
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+  const blob = await new Promise((ok, ko) => canvas.toBlob((b) => (b ? ok(b) : ko(new Error("encodage impossible"))), "image/jpeg", JPEG_QUALITY));
+  const dataUrl = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ko(r.error); r.readAsDataURL(blob); });
+  return { b64: dataUrl.slice(dataUrl.indexOf(",") + 1), url: URL.createObjectURL(blob) };
+}
+function dropImages(list) { for (const i of list) URL.revokeObjectURL(i.url); }
+function canAttach() { return Boolean(backends[$("chat-agent").value]?.images); }
+function syncAttach() {
+  const ok = canAttach();
+  $("chat-attach").hidden = !ok;
+  $("chat-attach").disabled = chatBusy || imagesPending > 0 || chatImages.length >= MAX_CHAT_IMAGES;
+  if (!ok && chatImages.length) { dropImages(chatImages); chatImages = []; renderThumbs(); }
+}
+function renderThumbs() {
+  const box = $("chat-thumbs"); box.replaceChildren(); box.hidden = !chatImages.length;
+  chatImages.forEach((item, n) => {
+    const t = el("div", "thumb"); const img = el("img"); img.src = item.url; img.alt = "Image " + (n + 1) + " à envoyer";
+    const x = el("button", null, "✕"); x.type = "button"; x.setAttribute("aria-label", "Retirer l'image " + (n + 1));
+    x.addEventListener("click", () => { URL.revokeObjectURL(item.url); chatImages.splice(chatImages.indexOf(item), 1); renderThumbs(); });
+    t.append(img, x); box.append(t);
+  });
+  syncAttach();
+}
+async function addImages(files) {
+  const room = MAX_CHAT_IMAGES - chatImages.length;
+  const picked = [...files].slice(0, room);
+  if (files.length > room) $("chat-hint").textContent = "4 images au plus par message : les autres sont ignorées.";
+  imagesPending += picked.length; syncAttach();
+  for (const file of picked) {
+    try { chatImages.push(await shrinkImage(file)); }
+    catch (err) { $("chat-hint").textContent = "Image illisible (" + (file.type || "type inconnu") + ") : " + err.message; }
+    finally { imagesPending -= 1; renderThumbs(); }
+  }
+}
+
 async function sendChat(e) {
   e.preventDefault();
   const text = $("chat-text").value.trim();
-  if (!text || chatBusy) { $("chat-text").focus(); return; }
+  if ((!text && !chatImages.length) || chatBusy || imagesPending) { $("chat-text").focus(); return; }
   const first = chatId === null;
   const body = first ? { agent: $("chat-agent").value, project: $("project").value || localStorageGet("project") || "default", text, ...seatOptions("chat-agent") } : { text };
+  if (chatImages.length) body.images = chatImages.map((i) => i.b64);
   $("chat-send").disabled = true;
   let res, data;
   try {
@@ -1339,7 +1409,8 @@ async function sendChat(e) {
   } catch (err) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", "Serveur injoignable : " + err.message)); return; }
   if (!res.ok) { $("chat-send").disabled = false; $("chat-log").append(el("div", "banner err", data.error || ("HTTP " + res.status))); return; }
   chatLastText = text; $("chat-text").value = "";
-  if (first) { chatId = data.id; history.replaceState(null, "", "#c-" + chatId); setChatHeader(null, text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text); }
+  dropImages(chatLastImages); chatLastImages = chatImages; chatImages = []; renderThumbs();
+  if (first) { chatId = data.id; history.replaceState(null, "", "#c-" + chatId); setChatHeader(null, !text ? "Image" : text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text); }
   setChatBusy(true);
   followChat(chatSeq + 1);
 }
@@ -1450,9 +1521,11 @@ $("delete-yes").addEventListener("click", deleteChat);
 $("chat-back").addEventListener("click", () => { setTab("chats"); window.scrollTo({ top: 0 }); });
 $("chat-history").addEventListener("click", (e) => { if (e.target.closest("a")) setTab("arena"); });
 $("chat-form").addEventListener("submit", sendChat);
+$("chat-attach").addEventListener("click", () => $("chat-file").click());
+$("chat-file").addEventListener("change", (e) => { addImages(e.target.files); e.target.value = ""; });
 $("chat-new").addEventListener("click", newChat);
 $("chat-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("chat-form").requestSubmit(); } });
-$("chat-agent").addEventListener("change", () => { localStorageSet("role-chat-agent", $("chat-agent").value); fillTune("chat-agent"); });
+$("chat-agent").addEventListener("change", () => { localStorageSet("role-chat-agent", $("chat-agent").value); fillTune("chat-agent"); syncAttach(); });
 for (const key of TUNE_KEYS) $("chat-agent-" + key).addEventListener("change", (e) => localStorageSet(`tune-chat-agent-${$("chat-agent").value}-${key}`, e.target.value));
 $("rerun").addEventListener("click", () => { if (caseCfg) newDebate(caseCfg); });
 $("copy").addEventListener("click", copyTranscript);
