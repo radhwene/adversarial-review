@@ -6,6 +6,7 @@ same CLIs used by ``adversarial_review.sh`` (prompt on stdin, list argv, never
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -40,6 +41,15 @@ class BackendTimeout(BackendError):
 
 
 @dataclass(frozen=True)
+class ImageFile:
+    """An image sent with a chat reply. ``number`` is its "[image N]" label in the history text."""
+
+    number: int
+    path: str
+    media_type: str
+
+
+@dataclass(frozen=True)
 class TurnRequest:
     """Everything a backend needs to produce one debate turn."""
 
@@ -48,6 +58,7 @@ class TurnRequest:
     prompt: str
     model: Optional[str] = None   # None: the backend's default (its --model flag or the CLI's own)
     effort: Optional[str] = None  # None: the CLI's default reasoning effort
+    images: Tuple[ImageFile, ...] = ()  # chat only; only sent to backends with supports_images
 
 
 class Backend:
@@ -56,6 +67,7 @@ class Backend:
     # these tuples is rejected by DebateConfig.validate. Empty tuple: no choice offered.
     models: Tuple[str, ...] = ()
     efforts: Tuple[str, ...] = ()
+    supports_images = False  # the app refuses images for an agent that would silently drop them
 
     def available(self) -> bool:
         raise NotImplementedError
@@ -140,6 +152,7 @@ class ClaudeBackend(Backend):
     name = "claude"
     models = ("fable", "opus", "sonnet", "haiku")           # aliases for the latest of each family
     efforts = ("low", "medium", "high", "xhigh", "max")    # claude --effort, Claude Code 2.1.322
+    supports_images = True  # stream() only: images go as content blocks with --input-format stream-json
 
     def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self.model = model
@@ -158,6 +171,8 @@ class ClaudeBackend(Backend):
         return argv
 
     def complete(self, request: TurnRequest) -> str:
+        if request.images:
+            raise BackendError("claude takes images only in stream mode")  # never drop them silently
         with tempfile.TemporaryDirectory(prefix="advr-claude-") as scratch:
             started = time.monotonic()
             proc = _run_cli(self.build_argv(request.model, request.effort), request.prompt, scratch, self.timeout)
@@ -173,6 +188,10 @@ class ClaudeBackend(Backend):
 
     def stream(self, request: TurnRequest, on_text: TextSink) -> str:
         argv = self.build_argv(request.model, request.effort) + CLAUDE_STREAM_FLAGS
+        stdin_text = request.prompt
+        if request.images:
+            argv += ["--input-format", "stream-json"]
+            stdin_text = claude_user_message(request)
         timed_out = threading.Event()
         with tempfile.TemporaryDirectory(prefix="advr-claude-") as scratch, tempfile.TemporaryFile("w+") as errf:
             started = time.monotonic()
@@ -189,7 +208,7 @@ class ClaudeBackend(Backend):
             timer = threading.Timer(self.timeout, kill_on_timeout)
             timer.start()
             try:
-                _write_prompt(proc.stdin, request.prompt)
+                _write_prompt(proc.stdin, stdin_text)
                 parsed = parse_claude_stream(proc.stdout, on_text)
                 proc.wait()
             finally:
@@ -200,9 +219,9 @@ class ClaudeBackend(Backend):
                 proc.stdout.close()
             errf.seek(0)
             stderr = errf.read()
-        logger.info("claude role=%s round=%d model=%s effort=%s exit=%d stream %.1fs", request.role, request.round,
-                    request.model or self.model or "default", request.effort or "default",
-                    proc.returncode, time.monotonic() - started)
+        logger.info("claude role=%s round=%d model=%s effort=%s images=%d exit=%d stream %.1fs", request.role,
+                    request.round, request.model or self.model or "default", request.effort or "default",
+                    len(request.images), proc.returncode, time.monotonic() - started)
         if timed_out.is_set():
             raise BackendTimeout(f"claude timed out after {self.timeout:.0f}s")
         if proc.returncode != 0 or parsed.is_error:
@@ -211,6 +230,18 @@ class ClaudeBackend(Backend):
         if not text:
             raise BackendError("claude returned empty output")
         return text
+
+
+def claude_user_message(request: TurnRequest) -> str:
+    """One stream-json input line: each image after its "Image N:" label, then the prompt text."""
+    content: List[Dict] = []
+    for image in request.images:
+        with open(image.path, "rb") as fh:
+            data = base64.b64encode(fh.read()).decode("ascii")
+        content.append({"type": "text", "text": f"Image {image.number}:"})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": image.media_type, "data": data}})
+    content.append({"type": "text", "text": request.prompt})
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
 def _write_prompt(stdin: IO[str], prompt: str) -> None:
@@ -250,6 +281,7 @@ class CodexBackend(Backend):
     name = "codex"
     # No model choice: this server's ChatGPT-linked account only accepts the --codex-model it starts with.
     efforts = ("low", "medium", "high")  # model_reasoning_effort
+    supports_images = True  # codex exec -i FILE, in order
 
     def __init__(self, model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self.model = model
@@ -258,22 +290,34 @@ class CodexBackend(Backend):
     def available(self) -> bool:
         return shutil.which("codex") is not None
 
-    def build_argv(self, scratch: str, out_file: str, effort: Optional[str] = None) -> List[str]:
+    def build_argv(self, scratch: str, out_file: str, effort: Optional[str] = None,
+                   images: Tuple[ImageFile, ...] = ()) -> List[str]:
         argv = ["codex", "exec", "--json"]
         if self.model:
             argv += ["-m", self.model]
         if effort:
             argv += ["-c", f"model_reasoning_effort={effort}"]
-        argv += ["--sandbox", "read-only", "--skip-git-repo-check", "-C", scratch, "-o", out_file, "-"]
-        return argv
+        argv += ["--sandbox", "read-only", "--skip-git-repo-check", "-C", scratch, "-o", out_file]
+        for image in images:
+            argv += ["-i", image.path]
+        return argv + ["-"]
+
+    @staticmethod
+    def codex_prompt(request: TurnRequest) -> str:
+        """codex has no per-image label: say which numbers the attached files are, in order."""
+        if not request.images:
+            return request.prompt
+        numbers = ", ".join(f"image {image.number}" for image in request.images)
+        return f"Attached images, in order: {numbers}.\n\n{request.prompt}"
 
     def complete(self, request: TurnRequest) -> str:
         with tempfile.TemporaryDirectory(prefix="advr-codex-") as scratch:
             out_file = os.path.join(scratch, "last_message.txt")
             started = time.monotonic()
-            proc = _run_cli(self.build_argv(scratch, out_file, request.effort), request.prompt, scratch, self.timeout)
-            logger.info("codex role=%s round=%d effort=%s exit=%d %.1fs", request.role, request.round,
-                        request.effort or "default", proc.returncode, time.monotonic() - started)
+            argv = self.build_argv(scratch, out_file, request.effort, request.images)
+            proc = _run_cli(argv, self.codex_prompt(request), scratch, self.timeout)
+            logger.info("codex role=%s round=%d effort=%s images=%d exit=%d %.1fs", request.role, request.round,
+                        request.effort or "default", len(request.images), proc.returncode, time.monotonic() - started)
             if proc.returncode != 0:
                 detail = codex_error_from_jsonl(proc.stdout) or _tail(proc.stderr)
                 raise BackendError(f"codex exited {proc.returncode}: {detail}")
@@ -346,6 +390,7 @@ class MockBackend(Backend):
     """Deterministic offline backend. The critic contests round 1 and accepts afterwards."""
 
     name = "mock"
+    supports_images = True
 
     def __init__(self, delay: float = 0.0) -> None:
         self.delay = delay
@@ -383,7 +428,8 @@ class MockBackend(Backend):
                 "---END_PROPOSER_STATUS---"
             )
         if request.role == "chat":
-            return f"**Mock reply #{request.round}.** I read {len(request.prompt)} characters of conversation."
+            seen = f" and {len(request.images)} image(s)" if request.images else ""
+            return f"**Mock reply #{request.round}.** I read {len(request.prompt)} characters of conversation{seen}."
         if request.role == "critic":
             verdict = "CONTEST" if request.round == 1 else "ACCEPT"
             objections = 2 if verdict == "CONTEST" else 0
