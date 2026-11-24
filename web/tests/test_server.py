@@ -628,6 +628,64 @@ class ChatServerTests(unittest.TestCase):
         self.assertEqual(resp.status, 202, raw)
         return json.loads(raw)["id"]
 
+    def test_rename_survives_restart_and_empty_title_restores_first_message(self):
+        chat_id = self.new_chat("Retiens 42.")
+        self.wait_idle(chat_id)
+        resp, raw = self.request("PATCH", f"/api/chats/{chat_id}", {"title": "  Mon   nombre  "})
+        self.assertEqual(resp.status, 200, raw)
+        self.assertEqual(json.loads(raw)["title"], "Mon nombre")
+        self.app.chats.clear()  # restart: the custom title must come back from disk
+        self.assertEqual([c["title"] for c in self.store.chat_summaries("default")], ["Mon nombre"])
+        resp, raw = self.request("GET", f"/api/chats/{chat_id}")
+        self.assertEqual(json.loads(raw)["title"], "Mon nombre")
+        resp, raw = self.request("PATCH", f"/api/chats/{chat_id}", {"title": ""})
+        self.assertEqual((resp.status, json.loads(raw)["title"]), (200, "Retiens 42."))
+
+    def test_rename_errors(self):
+        chat_id = self.new_chat()
+        self.wait_idle(chat_id)
+        for path, body, status in [
+            (f"/api/chats/{chat_id}", {"title": 3}, 400),
+            (f"/api/chats/{chat_id}", {}, 400),
+            (f"/api/chats/{chat_id}", {"title": "x" * 121}, 400),
+            ("/api/chats/0123456789ab", {"title": "x"}, 404),
+        ]:
+            resp, raw = self.request("PATCH", path, body)
+            self.assertEqual(resp.status, status, (body, raw))
+
+    def test_delete_removes_chat_from_disk_and_list(self):
+        chat_id = self.new_chat()
+        self.wait_idle(chat_id)
+        resp, raw = self.request("DELETE", f"/api/chats/{chat_id}")
+        self.assertEqual((resp.status, raw), (204, b""))
+        self.assertEqual(self.store.chat_summaries("default"), [])
+        self.assertIsNone(self.store.load_chat(chat_id))
+        resp, _ = self.request("GET", f"/api/chats/{chat_id}")
+        self.assertEqual(resp.status, 404)
+        resp, _ = self.request("DELETE", f"/api/chats/{chat_id}")
+        self.assertEqual(resp.status, 404)
+
+    def test_delete_refused_while_agent_answers(self):
+        self.backend.gate.clear()
+        chat_id = self.new_chat()
+        resp, raw = self.request("DELETE", f"/api/chats/{chat_id}")
+        self.assertEqual(resp.status, 409, raw)
+        self.backend.gate.set()
+        self.wait_idle(chat_id)
+        self.assertEqual(len(self.store.chat_summaries("default")), 1)
+
+    def test_message_racing_a_delete_is_refused_and_not_written_back(self):
+        chat_id = self.new_chat()
+        self.wait_idle(chat_id)
+        chat = self.app.get_chat(chat_id)
+        self.app.delete_chat(chat)  # the handler already holds this object when the delete lands
+        from chat import ChatDeleted
+        with self.assertRaises(ChatDeleted):
+            self.app.post_chat_message(chat, "encore")
+        self.assertIsNone(self.store.load_chat(chat_id))
+        self.assertTrue(self.app.slots.acquire(blocking=False), "slot leaked")
+        self.app.slots.release()
+
     def test_chat_remembers_and_is_saved_in_project(self):
         chat_id = self.new_chat()
         events = self.wait_idle(chat_id)

@@ -17,6 +17,8 @@ Routes:
     POST /api/chats {"agent", "model"?, "effort"?, "project"?, "text"}  new chat + first message -> 202 {"id"}
     POST /api/chats/<id>/messages {"text"}    next message (409 while the agent is answering)
     GET  /api/chats/<id>            JSON snapshot
+    PATCH /api/chats/<id> {"title"}  rename ("" = back to the first message) -> 200 snapshot
+    DELETE /api/chats/<id>          forget it (409 while the agent is answering) -> 204
     GET  /api/chats/<id>/events     Server-Sent Events, closes when the reply has landed
     GET  /api/projects/<name>/chats saved chats of a project, newest first
 """
@@ -45,7 +47,7 @@ from auth import (DEFAULT_PROVIDERS, AuthManager, InvalidAuthCode, NoLoginInProg
                   UnknownProvider)
 from backends import (DEFAULT_KEYS_DIR, DEFAULT_TIMEOUT_SECONDS, Backend, build_registry,  # noqa: E402
                       deepseek_key_store)
-from chat import Chat, ChatBusy, ChatConfig, ChatRunner, InvalidChatConfig  # noqa: E402
+from chat import Chat, ChatBusy, ChatConfig, ChatDeleted, ChatRunner, InvalidChatConfig, InvalidChatTitle  # noqa: E402
 from engine import (Debate, DebateClosed, DebateConfig, DebateRunner, InvalidDebateConfig,  # noqa: E402
                     EventLog, InvalidUserMessage, TooManyUserMessages, clean_user_message)
 from projects import (DEFAULT_PROJECT, DEFAULT_PROJECTS_ROOT, InvalidProjectName, TraceHeaderMismatch,  # noqa: E402
@@ -302,6 +304,17 @@ class App:
             self.projects.save_chat(chat.config.project, chat.snapshot())
         except OSError:
             logger.exception("chat=%s could not be saved", chat.id)
+
+    def delete_chat(self, chat: Chat) -> None:
+        """Forget a chat in memory and on disk. Raises ChatBusy while the agent answers: the reply
+        thread would otherwise save it back. A message racing this call gets ChatDeleted."""
+        with chat._cond:
+            if chat.state == "busy":
+                raise ChatBusy("the agent is still answering; delete the chat after its reply")
+            chat.mark_deleted()
+            self.chats.pop(chat.id, None)
+            if self.projects is not None:
+                self.projects.delete_chat(chat.config.project, chat.id)
 
     def get_chat(self, chat_id: str) -> Optional[Chat]:
         """In-memory chat, else a saved one reloaded from its project folder (memory included)."""
@@ -648,6 +661,50 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 return
             self._json(HTTPStatus.CREATED if created else HTTPStatus.OK, {"name": body["name"], "created": created})
 
+        def do_PATCH(self) -> None:
+            """Rename a chat: {"title": "..."}; an empty title goes back to the first message."""
+            if not self._guard():
+                return
+            m = _CHAT_PATH.match(self.path)
+            chat = app.get_chat(m.group(1)) if m else None
+            if chat is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown chat")
+                return
+            body = self._read_json_body()
+            if body is None:
+                return
+            title = body.get("title")
+            if not isinstance(title, str):
+                self._error(HTTPStatus.BAD_REQUEST, "title must be a string")
+                return
+            try:
+                chat.rename(title)
+            except InvalidChatTitle as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            logger.info("chat=%s renamed chars=%d", chat.id, len(chat.title))
+            self._json(HTTPStatus.OK, chat.snapshot())
+
+        def do_DELETE(self) -> None:
+            # CSRF: DELETE is not a "simple" method, so a cross-origin page needs a CORS preflight,
+            # which this server never answers.
+            if not self._guard():
+                return
+            m = _CHAT_PATH.match(self.path)
+            chat = app.get_chat(m.group(1)) if m else None
+            if chat is None:
+                self._error(HTTPStatus.NOT_FOUND, "unknown chat")
+                return
+            try:
+                app.delete_chat(chat)
+            except ChatBusy as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            logger.info("chat=%s deleted", chat.id)
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def _chat_message(self, chat_id: Optional[str]) -> None:
             """A chat message: the first one creates the chat (chat_id None), later ones continue it."""
             chat = None
@@ -686,6 +743,9 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 return
             except ChatBusy as exc:
                 self._error(HTTPStatus.CONFLICT, str(exc))
+                return
+            except ChatDeleted:
+                self._error(HTTPStatus.NOT_FOUND, "unknown chat")
                 return
             except (TooManyUserMessages, OverflowError) as exc:
                 self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))

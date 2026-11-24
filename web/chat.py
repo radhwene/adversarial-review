@@ -9,6 +9,7 @@ Events (same EventLog as debates, replayed over SSE):
     chat_started     {config}
     turn_completed   {turn}           a user message (state -> busy) or the agent's reply (-> idle)
     reply_failed     {kind, message}  the agent failed; the unanswered user message is dropped (-> idle)
+    chat_renamed     {title}          the human renamed the chat ("" title means: back to the first message)
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ MAX_CHAT_MESSAGES = 200          # user + assistant, per chat: bounds the snapsh
 OMITTED_MARKER = "({n} earlier messages omitted: the conversation is longer than the memory window)"
 TITLE_CHARS = 120
 
-__all__ = ["Chat", "ChatBusy", "ChatConfig", "ChatRunner", "InvalidChatConfig", "InvalidUserMessage",
-           "TooManyUserMessages", "format_history"]
+__all__ = ["Chat", "ChatBusy", "ChatConfig", "ChatDeleted", "ChatRunner", "InvalidChatConfig", "InvalidChatTitle",
+           "InvalidUserMessage", "TooManyUserMessages", "format_history"]
 
 
 class InvalidChatConfig(ValueError):
@@ -43,6 +44,22 @@ class InvalidChatConfig(ValueError):
 
 class ChatBusy(UserMessageRejected):
     """The agent is still answering the previous message."""
+
+
+class ChatDeleted(UserMessageRejected):
+    """The chat was deleted while this request was on its way: nothing may write it back to disk."""
+
+
+class InvalidChatTitle(ValueError):
+    pass
+
+
+def clean_title(title: str) -> Optional[str]:
+    """One line, at most TITLE_CHARS; empty means "no custom title" (None)."""
+    title = " ".join(title.split())
+    if len(title) > TITLE_CHARS:
+        raise InvalidChatTitle(f"title must be at most {TITLE_CHARS} characters")
+    return title or None
 
 
 @dataclass
@@ -90,6 +107,8 @@ class Chat(EventLog):
     turns: List[Turn] = field(default_factory=list)
     events: List[Dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+    custom_title: Optional[str] = None
+    deleted: bool = field(default=False, repr=False)
     observers: List[Callable[["Chat", Dict], None]] = field(default_factory=list, repr=False)
     _cond: threading.Condition = field(default_factory=lambda: threading.Condition(threading.RLock()), repr=False)
 
@@ -104,6 +123,8 @@ class Chat(EventLog):
 
     @property
     def title(self) -> str:
+        if self.custom_title:
+            return self.custom_title
         first = next((t.content for t in self.turns if t.role == USER_ROLE), "")
         if len(first) <= TITLE_CHARS:
             return first
@@ -113,6 +134,8 @@ class Chat(EventLog):
         """Record the human's message and mark the chat busy; the caller then runs ChatRunner.reply."""
         text = clean_user_message(text)
         with self._cond:
+            if self.deleted:
+                raise ChatDeleted("this chat was deleted")
             if self.state == "busy":
                 raise ChatBusy("the agent is still answering; wait for its reply")
             if len(self.turns) + 2 > MAX_CHAT_MESSAGES:  # this message and its reply
@@ -136,16 +159,28 @@ class Chat(EventLog):
                 self.turns.pop()
             self.emit("reply_failed", final_state="idle", kind=kind, message=message)
 
+    def rename(self, title: str) -> None:
+        """Set (or clear, with "") the title shown in the chat list. Allowed while the agent answers."""
+        custom = clean_title(title)
+        with self._cond:
+            self.custom_title = custom
+            self.emit("chat_renamed", title=self.title)
+
+    def mark_deleted(self) -> None:
+        """Refuse further messages; the caller holds ``_cond`` and has checked the chat is idle."""
+        self.deleted = True
+
     def snapshot(self) -> Dict:
         with self._cond:
             return {"id": self.id, "kind": "chat", "state": self.state, "config": asdict(self.config),
-                    "title": self.title, "turns": [asdict(t) for t in self.turns],
+                    "title": self.title, "custom_title": self.custom_title, "turns": [asdict(t) for t in self.turns],
                     "created_at": self.created_at, "events": list(self.events)}
 
     @classmethod
     def from_snapshot(cls, snap: Dict) -> "Chat":
         chat = cls(config=ChatConfig(**snap["config"]), id=snap["id"], state=snap["state"],
-                   created_at=snap.get("created_at", time.time()), events=list(snap.get("events", [])))
+                   created_at=snap.get("created_at", time.time()), events=list(snap.get("events", [])),
+                   custom_title=snap.get("custom_title"))
         chat.turns = [Turn(**t) for t in snap.get("turns", [])]
         if chat.state == "busy":  # server died mid-reply: unlock the chat, or every message is ChatBusy forever
             chat.fail_reply("interrupted", "server stopped during this reply; send your message again")

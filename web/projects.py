@@ -194,6 +194,16 @@ class ProjectStore:
     def load_chat(self, chat_id: str) -> Optional[Dict]:
         return self._load(CHATS_DIRNAME, chat_id)
 
+    def delete_chat(self, project: str, chat_id: str) -> bool:
+        """Remove a saved chat. Its lines in trace-debat.csv stay: the trace is an append-only audit log."""
+        if not DEBATE_ID_RE.match(chat_id):
+            return False
+        try:
+            os.remove(os.path.join(self.path(project), CHATS_DIRNAME, f"{chat_id}.json"))
+        except FileNotFoundError:
+            return False
+        return True
+
     def chat_summaries(self, project: str) -> List[Dict]:
         if not self.exists(project):
             raise UnknownProject(project)
