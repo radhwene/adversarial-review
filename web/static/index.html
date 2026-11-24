@@ -260,6 +260,7 @@ legend { padding: 0; }
 .turn.critic .turn-body { border-radius: var(--r-lg) var(--r-sm) var(--r-lg) var(--r-lg); }
 .turn.judge .turn-body { border-radius: var(--r-lg); }
 .turn-body > :first-child { margin-top: 0; }
+.turn-body .draft { margin-bottom: var(--space-3); }
 .turn-body > :last-child { margin-bottom: 0; }
 .turn-body h2, .turn-body h3, .turn-body h4 { margin: var(--space-4) 0 var(--space-2); font: 600 var(--fs-base)/1.4 var(--display); }
 .turn-body p { margin: 0 0 var(--space-3); }
@@ -1203,6 +1204,8 @@ async function loadHistory() {
 
 // ---------- direct chat: one agent, the server keeps the memory ----------
 let chatId = null, chatSeq = -1, chatSource = null, chatBusy = false, chatLastText = "", chatTimer = null;
+// Reply being written, shown word by word inside the "rédige…" card. Never saved: the final reply replaces it.
+let draftRound = -1, draftText = "", draftFrame = 0;
 
 function closeChatSource() { if (chatSource) { chatSource.close(); chatSource = null; } clearInterval(chatTimer); }
 
@@ -1217,8 +1220,9 @@ function setChatBusy(busy) {
   $("chat-delete").disabled = busy;  // the server refuses (409) while the agent answers
   $("delete-yes").disabled = busy;
   const p = $("chat-pending");
-  if (!busy) { if (p) p.remove(); clearInterval(chatTimer); return; }
+  if (!busy) { if (p) p.remove(); clearInterval(chatTimer); draftRound = -1; draftText = ""; return; }
   if (p) return;
+  draftRound = -1; draftText = "";
   const card = el("article", "turn pending assistant"); card.id = "chat-pending";
   card.append(turnHead("assistant", $("chat-agent").value));
   const w = el("div", "writing stack-2"); w.append(el("i"), el("i"), el("i")); const t = el("span", null, "rédige… 0 s"); w.append(t);
@@ -1251,6 +1255,26 @@ function setChatHeader(snapOrCfg, title) {
   }
 }
 
+// Pieces carry their offset: a reconnect resends the whole draft from 0 and only the missing part is kept.
+function showDraft(d) {
+  if (!$("chat-pending")) return;  // the reply already landed
+  if (d.round !== draftRound) { if (d.offset !== 0) return; draftRound = d.round; draftText = ""; }
+  if (d.offset > draftText.length) return;  // gap: the next connection resends from 0
+  draftText = draftText.slice(0, d.offset) + d.text;
+  if (!draftFrame) draftFrame = requestAnimationFrame(renderDraft);  // at most one render per frame
+}
+
+function renderDraft() {
+  draftFrame = 0;
+  const body = $("chat-pending")?.querySelector(".turn-body");
+  if (!body || !draftText) return;
+  let box = body.querySelector(".draft");
+  if (!box) { box = el("div", "draft"); body.prepend(box); }
+  const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 80;
+  box.innerHTML = renderMarkdown(draftText);  // escaped in renderMarkdown
+  if (atBottom) window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });  // follow, unless the reader scrolled up
+}
+
 function handleChat(ev) {
   if (ev.type === "turn_completed") {
     addChatTurn(ev.turn);
@@ -1267,13 +1291,14 @@ function handleChat(ev) {
 
 // Server closes the stream once the reply has landed; we close first on that event so EventSource never reconnects.
 function followChat(from) {
-  closeChatSource();
+  if (chatSource) chatSource.close();  // not closeChatSource(): the "rédige… N s" timer started by setChatBusy must keep running
   chatSource = new EventSource("api/chats/" + chatId + "/events?from=" + from);
   chatSource.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.seq <= chatSeq) return;
     chatSeq = ev.seq; handleChat(ev);
   };
+  chatSource.addEventListener("draft", (m) => showDraft(JSON.parse(m.data)));
   chatSource.onerror = () => {
     if (chatSource && chatSource.readyState === EventSource.CLOSED) { closeChatSource(); setChatBusy(false); $("chat-log").append(el("div", "banner err", "Flux SSE interrompu : recharge la page.")); }
   };
