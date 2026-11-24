@@ -173,6 +173,7 @@ class Turn:
     content: str
     status: Optional[Dict[str, str]]
     duration_s: float
+    images: List[str] = field(default_factory=list)  # chat only: stored image names; absent in older snapshots
 
 
 class EventLog:

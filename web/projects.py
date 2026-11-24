@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ TRACE_FILENAME = "trace-debat.csv"
 LEGACY_TRACE_FILENAME = "FADO.csv"
 DEBATES_DIRNAME = "debates"
 CHATS_DIRNAME = "chats"
+CHAT_FILES_SUFFIX = ".files"  # chats/<id>.files/<sha256>.<ext>
 # Letters, digits, '-' and '_' only: no '/', no '..', so a name can never escape the root.
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 DEBATE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -194,10 +196,32 @@ class ProjectStore:
     def load_chat(self, chat_id: str) -> Optional[Dict]:
         return self._load(CHATS_DIRNAME, chat_id)
 
+    def chat_files_dir(self, project: str, chat_id: str) -> str:
+        """Folder of a chat's images, beside its JSON (which is rewritten on every event, so it only
+        holds their names). May not exist yet."""
+        if not DEBATE_ID_RE.match(chat_id):
+            raise ValueError(f"invalid chat id: {chat_id!r}")
+        return os.path.join(self.path(project), CHATS_DIRNAME, f"{chat_id}{CHAT_FILES_SUFFIX}")
+
+    def save_chat_file(self, project: str, chat_id: str, name: str, data: bytes) -> bool:
+        """Store one image under its content-addressed ``name``. Returns False when it was already there."""
+        folder = self.chat_files_dir(project, chat_id)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            return False
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)  # atomic: a reader never serves half an image
+        return True
+
     def delete_chat(self, project: str, chat_id: str) -> bool:
-        """Remove a saved chat. Its lines in trace-debat.csv stay: the trace is an append-only audit log."""
+        """Remove a saved chat and its images. Its lines in trace-debat.csv stay: the trace is an
+        append-only audit log."""
         if not DEBATE_ID_RE.match(chat_id):
             return False
+        shutil.rmtree(self.chat_files_dir(project, chat_id), ignore_errors=True)
         try:
             os.remove(os.path.join(self.path(project), CHATS_DIRNAME, f"{chat_id}.json"))
         except FileNotFoundError:
