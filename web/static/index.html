@@ -579,7 +579,6 @@ function showView(name) {
   setTab("arena");
   if (name !== "chat") closeChatSource();
   $("chat").hidden = name !== "chat";
-  $("modes").hidden = name === "case";
   for (const b of $("modes").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.mode === name));
   $("saisine").hidden = name !== "form";
   $("case").hidden = name !== "case";

@@ -406,6 +406,7 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")  # phones must pick up a new UI after a rebuild
                 self.send_header("Content-Security-Policy",
                                  "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                  "script-src 'self' 'unsafe-inline'; connect-src 'self'")
