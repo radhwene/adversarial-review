@@ -775,15 +775,22 @@ def make_handler(app: App, allowed_hosts: frozenset = LOOPBACK_HOSTS):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
+            draft_round, draft_sent = -1, 0  # chats only: the part of the reply in progress already sent
             try:
                 while True:
-                    events = debate.wait_events(start, timeout=SSE_HEARTBEAT_SECONDS)
-                    if not events:
+                    if isinstance(debate, Chat):
+                        events, piece = debate.wait_update(start, draft_round, draft_sent, SSE_HEARTBEAT_SECONDS)
+                    else:
+                        events, piece = debate.wait_events(start, timeout=SSE_HEARTBEAT_SECONDS), None
+                    if not events and piece is None:
                         if debate.finished:
                             break
                         self.wfile.write(b": heartbeat\n\n")
                     for ev in events:
                         self.wfile.write(f"id: {ev['seq']}\ndata: {json.dumps(ev)}\n\n".encode())
+                    if piece is not None:  # named event, no id: it must not move Last-Event-ID
+                        self.wfile.write(f"event: draft\ndata: {json.dumps(piece)}\n\n".encode())
+                        draft_round, draft_sent = piece["round"], piece["offset"] + len(piece["text"])
                     self.wfile.flush()
                     start += len(events)
                     if debate.finished and start >= len(debate.events):

@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,15 +47,22 @@ class ServerTests(unittest.TestCase):
         return json.loads(raw)["id"]
 
     def read_sse(self, path: str, headers=None) -> List[Dict]:
+        """The saved events of the stream (unnamed SSE messages); drafts are left out."""
+        return [data for name, data in self.read_sse_all(path, headers) if name == "message"]
+
+    def read_sse_all(self, path: str, headers=None) -> List[Tuple[str, Dict]]:
+        """Every SSE message as (event name, data), in order; unnamed messages are "message"."""
         resp, raw = self.request("GET", path, headers=headers)
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.getheader("Content-Type"), "text/event-stream")
-        events = []
+        out = []
         for chunk in raw.decode().split("\n\n"):
-            data = [line[len("data: "):] for line in chunk.splitlines() if line.startswith("data: ")]
+            lines = chunk.splitlines()
+            data = [line[len("data: "):] for line in lines if line.startswith("data: ")]
+            name = next((line[len("event: "):] for line in lines if line.startswith("event: ")), "message")
             if data:
-                events.append(json.loads(data[0]))
-        return events
+                out.append((name, json.loads(data[0])))
+        return out
 
     def test_index_and_backends(self):
         resp, raw = self.request("GET", "/")
@@ -591,6 +598,15 @@ class RecordingMock(MockBackend):
         self.gate.wait(5)
         return super().complete(request)
 
+    def stream(self, request, on_text):
+        """First 5 characters, then hold until ``gate``, then the rest: a draft exists mid-reply."""
+        self.prompts.append(request.prompt)
+        reply = self._reply(request)
+        on_text(reply[:5])
+        self.gate.wait(5)
+        on_text(reply[5:])
+        return reply
+
 
 class ChatServerTests(unittest.TestCase):
     """Chat routes over real HTTP + SSE, saved in a real project folder."""
@@ -613,6 +629,7 @@ class ChatServerTests(unittest.TestCase):
 
     request = ServerTests.request
     read_sse = ServerTests.read_sse
+    read_sse_all = ServerTests.read_sse_all
 
     def wait_idle(self, chat_id: str) -> List[Dict]:
         """SSE until the reply lands, then wait (bounded) for the reply thread to free its slot."""
@@ -653,6 +670,44 @@ class ChatServerTests(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual([(c["id"], c["project"], c["title"]) for c in json.loads(raw)],
                          [(second, "autre", "dans autre"), (first, "default", "dans default")])
+
+    def test_sse_sends_the_draft_before_the_reply_and_never_saves_it(self):
+        self.backend.gate.clear()
+        chat_id = self.new_chat("Bonjour")
+        chat = self.app.chats[chat_id]
+        deadline = time.monotonic() + 5
+        while chat.draft == "":  # bounded poll: the reply thread has sent its first piece
+            self.assertLess(time.monotonic(), deadline, "no draft")
+            threading.Event().wait(0.01)
+        saved = json.load(open(os.path.join(self.tmp.name, "default", "chats", chat_id + ".json")))
+        self.assertNotIn("draft", json.dumps(saved))
+        resp, raw = self.request("GET", f"/api/chats/{chat_id}")
+        self.assertNotIn("draft", json.loads(raw))
+        threading.Timer(0.3, self.backend.gate.set).start()  # reader is connected and has the first piece by then
+        stream = self.read_sse_all(f"/api/chats/{chat_id}/events")
+        names = [n if n == "draft" else d["type"] for n, d in stream]
+        # The second piece may land together with the reply (then the reply supersedes it): 1 or 2 drafts.
+        self.assertIn(names, (["chat_started", "turn_completed", "draft", "turn_completed"],
+                              ["chat_started", "turn_completed", "draft", "draft", "turn_completed"]))
+        reply = stream[-1][1]["turn"]["content"]
+        drafts = [d for n, d in stream if n == "draft"]
+        self.assertEqual(drafts[0], {"round": 1, "offset": 0, "text": reply[:5]})
+        if len(drafts) == 2:
+            self.assertEqual(drafts[1], {"round": 1, "offset": 5, "text": reply[5:]})
+        self.assertEqual(chat.draft, "")
+
+    def test_reconnecting_reader_gets_the_whole_draft_again(self):
+        self.backend.gate.clear()
+        chat_id = self.new_chat("Bonjour")
+        chat = self.app.chats[chat_id]
+        deadline = time.monotonic() + 5
+        while chat.draft == "":
+            self.assertLess(time.monotonic(), deadline, "no draft")
+            threading.Event().wait(0.01)
+        threading.Timer(0.3, self.backend.gate.set).start()
+        stream = self.read_sse_all(f"/api/chats/{chat_id}/events?from=2")  # events already seen
+        self.assertEqual(stream[0], ("draft", {"round": 1, "offset": 0, "text": chat.turns[1].content[:5]}))
+        self.assertEqual(stream[-1][1]["type"], "turn_completed")
 
     def test_rename_errors(self):
         chat_id = self.new_chat()

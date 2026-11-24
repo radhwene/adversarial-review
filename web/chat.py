@@ -10,6 +10,10 @@ Events (same EventLog as debates, replayed over SSE):
     turn_completed   {turn}           a user message (state -> busy) or the agent's reply (-> idle)
     reply_failed     {kind, message}  the agent failed; the unanswered user message is dropped (-> idle)
     chat_renamed     {title}          the human renamed the chat ("" title means: back to the first message)
+
+While the agent answers, the text generated so far is kept in ``draft`` (memory only, never saved
+and not an event: one save per token would rewrite the file hundreds of times). SSE readers get it
+through ``wait_update`` as {round, offset, text} pieces; the final reply replaces it.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from backends import Backend, BackendError, BackendTimeout, TurnRequest
 from engine import (USER_ROLE, EventLog, InvalidUserMessage, Turn, TooManyUserMessages, UserMessageRejected,
@@ -109,6 +113,8 @@ class Chat(EventLog):
     created_at: float = field(default_factory=time.time)
     custom_title: Optional[str] = None
     deleted: bool = field(default=False, repr=False)
+    draft: str = field(default="", repr=False)    # reply being generated; never saved
+    draft_round: int = field(default=-1, repr=False)  # round of the reply being drafted
     observers: List[Callable[["Chat", Dict], None]] = field(default_factory=list, repr=False)
     _cond: threading.Condition = field(default_factory=lambda: threading.Condition(threading.RLock()), repr=False)
 
@@ -142,6 +148,7 @@ class Chat(EventLog):
                 raise TooManyUserMessages(f"at most {MAX_CHAT_MESSAGES} messages per chat; start a new one")
             turn = Turn(role=USER_ROLE, agent=USER_ROLE, round=len(self.turns), content=text, status=None, duration_s=0.0)
             self.turns.append(turn)
+            self.draft, self.draft_round = "", len(self.turns)
             self.emit("turn_completed", final_state="busy", turn=asdict(turn))
 
     def add_reply(self, content: str, duration_s: float) -> Turn:
@@ -149,6 +156,7 @@ class Chat(EventLog):
             turn = Turn(role=ASSISTANT_ROLE, agent=self.config.agent, round=len(self.turns), content=content,
                         status=None, duration_s=duration_s)
             self.turns.append(turn)
+            self.draft = ""
             self.emit("turn_completed", final_state="idle", turn=asdict(turn))
             return turn
 
@@ -157,7 +165,33 @@ class Chat(EventLog):
         with self._cond:
             if self.turns and self.turns[-1].role == USER_ROLE:
                 self.turns.pop()
+            self.draft = ""
             self.emit("reply_failed", final_state="idle", kind=kind, message=message)
+
+    def append_draft(self, text: str) -> None:
+        """Add a piece of the reply being generated and wake SSE readers."""
+        with self._cond:
+            if self.state != "busy":
+                return  # a late piece after the reply landed or failed: the final text already won
+            self.draft += text
+            self._cond.notify_all()
+
+    def wait_update(self, start: int, draft_round: int, draft_sent: int,
+                    timeout: float) -> Tuple[List[Dict], Optional[Dict]]:
+        """Block until there are events beyond ``start`` or draft text the reader has not got yet.
+        ``draft_round``/``draft_sent``: the round and length of the draft already sent to this reader.
+        Returns (events, piece); piece is {round, offset, text} or None. Events come first: the user
+        message that starts a draft is always delivered before that draft."""
+        with self._cond:
+            def unseen_draft() -> bool:
+                return bool(self.draft) and (self.draft_round != draft_round or len(self.draft) > draft_sent)
+            self._cond.wait_for(lambda: len(self.events) > start or self.finished or unseen_draft(), timeout=timeout)
+            events = list(self.events[start:])
+            piece = None
+            if unseen_draft():
+                offset = draft_sent if self.draft_round == draft_round else 0
+                piece = {"round": self.draft_round, "offset": offset, "text": self.draft[offset:]}
+            return events, piece
 
     def rename(self, title: str) -> None:
         """Set (or clear, with "") the title shown in the chat list. Allowed while the agent answers."""
@@ -197,8 +231,8 @@ class ChatRunner:
         prompt = load_prompt("chat").substitute(history=format_history(chat.turns))
         started = time.monotonic()
         try:
-            raw = self.registry[cfg.agent].complete(TurnRequest(role=CHAT_ROLE, round=len(chat.turns), prompt=prompt,
-                                                                model=cfg.model, effort=cfg.effort))
+            raw = self.registry[cfg.agent].stream(TurnRequest(role=CHAT_ROLE, round=len(chat.turns), prompt=prompt,
+                                                              model=cfg.model, effort=cfg.effort), chat.append_draft)
         except BackendTimeout as exc:
             self._fail(chat, "timeout", str(exc))
             return

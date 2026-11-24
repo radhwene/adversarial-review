@@ -13,12 +13,13 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import re
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import IO, Callable, Dict, Iterable, List, Optional, Tuple
 
 from api_keys import ApiKeyStore
 
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 600
 STDERR_TAIL_CHARS = 800
+
+TextSink = Callable[[str], None]  # receives each new piece of a reply while it is being generated
 
 
 class BackendError(RuntimeError):
@@ -60,6 +63,12 @@ class Backend:
     def complete(self, request: TurnRequest) -> str:
         raise NotImplementedError
 
+    def stream(self, request: TurnRequest, on_text: TextSink) -> str:
+        """Like ``complete``, and also hand each new piece of the reply to ``on_text`` as it is
+        generated. Returns the full reply. Backends that cannot stream answer in one block and
+        never call ``on_text``."""
+        return self.complete(request)
+
 
 def _tail(text: str) -> str:
     return text[-STDERR_TAIL_CHARS:].strip()
@@ -88,6 +97,41 @@ CLAUDE_ISOLATION_FLAGS = ["--setting-sources", "project", "--tools", "", "--stri
 # Same idea for gemini: plan mode is read-only (no file edits, no shell), no extensions, and the
 # empty scratch dir is trusted so headless mode does not stop on the folder-trust prompt.
 GEMINI_ISOLATION_FLAGS = ["--approval-mode", "plan", "-e", "none", "--skip-trust"]
+# One JSON event per line, including partial text (stream_event / content_block_delta / text_delta)
+# and a final ``result`` event. --verbose is required by the CLI for stream-json with --print.
+CLAUDE_STREAM_FLAGS = ["--output-format", "stream-json", "--include-partial-messages", "--verbose"]
+
+
+@dataclass
+class ClaudeStreamResult:
+    streamed: str           # concatenated text deltas
+    result: Optional[str]   # text of the final ``result`` event (authoritative), None if it never came
+    is_error: bool
+
+
+def parse_claude_stream(lines: Iterable[str], on_text: TextSink) -> ClaudeStreamResult:
+    """Read ``claude --output-format stream-json`` lines, forwarding text deltas to ``on_text``.
+    Non-JSON lines and other event types (thinking, rate limits, tool use) are skipped."""
+    pieces: List[str] = []
+    result: Optional[str] = None
+    is_error = False
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "stream_event":
+            inner = event.get("event") or {}
+            delta = inner.get("delta") or {}
+            if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta" and delta.get("text"):
+                pieces.append(delta["text"])
+                on_text(delta["text"])
+        elif event.get("type") == "result":
+            result = event.get("result") if isinstance(event.get("result"), str) else None
+            is_error = bool(event.get("is_error")) or event.get("subtype") != "success"
+    return ClaudeStreamResult(streamed="".join(pieces), result=result, is_error=is_error)
 
 
 class ClaudeBackend(Backend):
@@ -126,6 +170,55 @@ class ClaudeBackend(Backend):
         if not text:
             raise BackendError("claude returned empty output")
         return text
+
+    def stream(self, request: TurnRequest, on_text: TextSink) -> str:
+        argv = self.build_argv(request.model, request.effort) + CLAUDE_STREAM_FLAGS
+        timed_out = threading.Event()
+        with tempfile.TemporaryDirectory(prefix="advr-claude-") as scratch, tempfile.TemporaryFile("w+") as errf:
+            started = time.monotonic()
+            try:
+                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                        text=True, cwd=scratch)
+            except FileNotFoundError as exc:
+                raise BackendError("claude not found on PATH") from exc
+
+            def kill_on_timeout() -> None:
+                timed_out.set()
+                proc.kill()  # closes stdout, so the read loop below ends
+
+            timer = threading.Timer(self.timeout, kill_on_timeout)
+            timer.start()
+            try:
+                _write_prompt(proc.stdin, request.prompt)
+                parsed = parse_claude_stream(proc.stdout, on_text)
+                proc.wait()
+            finally:
+                timer.cancel()
+                if proc.poll() is None:  # on_text raised, or another error: never leave the CLI running
+                    proc.kill()
+                    proc.wait()
+                proc.stdout.close()
+            errf.seek(0)
+            stderr = errf.read()
+        logger.info("claude role=%s round=%d model=%s effort=%s exit=%d stream %.1fs", request.role, request.round,
+                    request.model or self.model or "default", request.effort or "default",
+                    proc.returncode, time.monotonic() - started)
+        if timed_out.is_set():
+            raise BackendTimeout(f"claude timed out after {self.timeout:.0f}s")
+        if proc.returncode != 0 or parsed.is_error:
+            raise BackendError(f"claude exited {proc.returncode}: {_tail(parsed.result or stderr)}")
+        text = (parsed.result if parsed.result is not None else parsed.streamed).strip()
+        if not text:
+            raise BackendError("claude returned empty output")
+        return text
+
+
+def _write_prompt(stdin: IO[str], prompt: str) -> None:
+    try:
+        stdin.write(prompt)
+        stdin.close()
+    except BrokenPipeError:
+        pass  # the CLI died before reading it all: its exit code and stderr say why
 
 
 def codex_error_from_jsonl(stdout: str) -> Optional[str]:
@@ -263,6 +356,19 @@ class MockBackend(Backend):
     def complete(self, request: TurnRequest) -> str:
         if self.delay:
             time.sleep(self.delay)  # simulates model latency for the UI demo only
+        return self._reply(request)
+
+    def stream(self, request: TurnRequest, on_text: TextSink) -> str:
+        reply = self._reply(request)
+        words = re.findall(r"\S+\s*", reply)
+        for word in words:
+            if self.delay:
+                time.sleep(self.delay / len(words))  # same total latency as complete(), spread over words
+            on_text(word)
+        return reply
+
+    @staticmethod
+    def _reply(request: TurnRequest) -> str:
         if request.role == "proposer" and request.round == 0:
             return (
                 "**Position.** The claim holds under the stated assumptions.\n\n"
