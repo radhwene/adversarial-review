@@ -21,11 +21,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from backends import Backend, BackendError, BackendTimeout, TurnRequest
+from attachments import media_type_of
+from backends import Backend, BackendError, BackendTimeout, ImageFile, TurnRequest
 from engine import (USER_ROLE, EventLog, InvalidUserMessage, Turn, TooManyUserMessages, UserMessageRejected,
                     clean_user_message, load_prompt, option_error)
 
@@ -37,6 +39,11 @@ MAX_CHAT_HISTORY_CHARS = 60_000  # sent with each reply: bounds prompt size, cos
 MAX_CHAT_MESSAGES = 200          # user + assistant, per chat: bounds the snapshot on disk
 OMITTED_MARKER = "({n} earlier messages omitted: the conversation is longer than the memory window)"
 TITLE_CHARS = 120
+IMAGE_ONLY_TITLE = "Image"       # title of a chat whose first message is a photo without text
+# Images sent with one reply. Every reply resends the history, so without this cap one early photo
+# would be billed again on every turn; older images stay in the text as "[image N]" only.
+MAX_IMAGES_PER_REPLY = 4
+IMAGE_LABEL = "[image {n}]"
 
 __all__ = ["Chat", "ChatBusy", "ChatConfig", "ChatDeleted", "ChatRunner", "InvalidChatConfig", "InvalidChatTitle",
            "InvalidUserMessage", "TooManyUserMessages", "format_history"]
@@ -86,17 +93,52 @@ class ChatConfig:
                 raise InvalidChatConfig(f"{error.lstrip('.: ')}")
 
 
-def format_history(turns: List[Turn], limit: int = MAX_CHAT_HISTORY_CHARS) -> str:
-    """The newest messages that fit in ``limit`` characters, oldest first. The last message is
-    always kept (it is the one to answer); older ones are dropped whole, never cut."""
+def clean_chat_text(text: str, has_images: bool) -> str:
+    """Like clean_user_message, but a photo may come without text (as in the Claude app)."""
+    if has_images and not text.strip():
+        return ""
+    return clean_user_message(text)
+
+
+def image_numbers(turns: List[Turn]) -> List[Tuple[int, str]]:
+    """(number, name) of every image in the chat, numbered from 1 in the order they were sent."""
+    names = [name for turn in turns for name in turn.images]
+    return list(enumerate(names, 1))
+
+
+def _block(turn: Turn, first_number: int) -> str:
+    labels = [IMAGE_LABEL.format(n=first_number + i) for i in range(len(turn.images))]
+    body = "\n".join(labels + ([turn.content] if turn.content else []))
+    return f"### {'USER' if turn.role == USER_ROLE else 'ASSISTANT'}\n{body}"
+
+
+def history_window(turns: List[Turn], limit: int = MAX_CHAT_HISTORY_CHARS) -> int:
+    """Index of the oldest turn format_history keeps."""
+    return len(turns) - len(_kept_blocks(turns, limit))
+
+
+def _kept_blocks(turns: List[Turn], limit: int) -> List[str]:
+    """Blocks of the newest turns that fit in ``limit``, newest first; the last turn always."""
+    first_numbers, n = [], 1
+    for turn in turns:
+        first_numbers.append(n)
+        n += len(turn.images)
     blocks: List[str] = []
     used = 0
-    for turn in reversed(turns):
-        block = f"### {'USER' if turn.role == USER_ROLE else 'ASSISTANT'}\n{turn.content}"
+    for index in range(len(turns) - 1, -1, -1):
+        block = _block(turns[index], first_numbers[index])
         if blocks and used + len(block) > limit:
             break
         blocks.append(block)
         used += len(block) + 2  # the blank line between blocks
+    return blocks
+
+
+def format_history(turns: List[Turn], limit: int = MAX_CHAT_HISTORY_CHARS) -> str:
+    """The newest messages that fit in ``limit`` characters, oldest first. The last message is
+    always kept (it is the one to answer); older ones are dropped whole, never cut. Each image
+    appears as a numbered "[image N]" line in the message it was sent with."""
+    blocks = _kept_blocks(turns, limit)
     omitted = len(turns) - len(blocks)
     if omitted:
         blocks.append(OMITTED_MARKER.format(n=omitted))
@@ -115,6 +157,7 @@ class Chat(EventLog):
     deleted: bool = field(default=False, repr=False)
     draft: str = field(default="", repr=False)    # reply being generated; never saved
     draft_round: int = field(default=-1, repr=False)  # round of the reply being drafted
+    files_dir: Optional[str] = field(default=None, repr=False)  # where its images are stored (set by the app)
     observers: List[Callable[["Chat", Dict], None]] = field(default_factory=list, repr=False)
     _cond: threading.Condition = field(default_factory=lambda: threading.Condition(threading.RLock()), repr=False)
 
@@ -131,14 +174,18 @@ class Chat(EventLog):
     def title(self) -> str:
         if self.custom_title:
             return self.custom_title
-        first = next((t.content for t in self.turns if t.role == USER_ROLE), "")
+        first_turn = next((t for t in self.turns if t.role == USER_ROLE), None)
+        first = first_turn.content if first_turn else ""
+        if not first and first_turn is not None and first_turn.images:
+            return IMAGE_ONLY_TITLE
         if len(first) <= TITLE_CHARS:
             return first
         return first[:TITLE_CHARS - 1].rstrip() + "…"  # visibly cut, not silently
 
-    def add_user_message(self, text: str) -> None:
-        """Record the human's message and mark the chat busy; the caller then runs ChatRunner.reply."""
-        text = clean_user_message(text)
+    def add_user_message(self, text: str, images: Sequence[str] = ()) -> None:
+        """Record the human's message and mark the chat busy; the caller then runs ChatRunner.reply.
+        ``images``: names of images already stored in ``files_dir``."""
+        text = clean_chat_text(text, bool(images))
         with self._cond:
             if self.deleted:
                 raise ChatDeleted("this chat was deleted")
@@ -146,7 +193,8 @@ class Chat(EventLog):
                 raise ChatBusy("the agent is still answering; wait for its reply")
             if len(self.turns) + 2 > MAX_CHAT_MESSAGES:  # this message and its reply
                 raise TooManyUserMessages(f"at most {MAX_CHAT_MESSAGES} messages per chat; start a new one")
-            turn = Turn(role=USER_ROLE, agent=USER_ROLE, round=len(self.turns), content=text, status=None, duration_s=0.0)
+            turn = Turn(role=USER_ROLE, agent=USER_ROLE, round=len(self.turns), content=text, status=None, duration_s=0.0,
+                        images=list(images))
             self.turns.append(turn)
             self.draft, self.draft_round = "", len(self.turns)
             self.emit("turn_completed", final_state="busy", turn=asdict(turn))
@@ -231,8 +279,9 @@ class ChatRunner:
         prompt = load_prompt("chat").substitute(history=format_history(chat.turns))
         started = time.monotonic()
         try:
-            raw = self.registry[cfg.agent].stream(TurnRequest(role=CHAT_ROLE, round=len(chat.turns), prompt=prompt,
-                                                              model=cfg.model, effort=cfg.effort), chat.append_draft)
+            request = TurnRequest(role=CHAT_ROLE, round=len(chat.turns), prompt=prompt, model=cfg.model,
+                                  effort=cfg.effort, images=self.images_to_send(chat))
+            raw = self.registry[cfg.agent].stream(request, chat.append_draft)
         except BackendTimeout as exc:
             self._fail(chat, "timeout", str(exc))
             return
@@ -240,6 +289,17 @@ class ChatRunner:
             self._fail(chat, "backend_error", str(exc))
             return
         chat.add_reply(raw.strip(), round(time.monotonic() - started, 2))
+
+    @staticmethod
+    def images_to_send(chat: Chat) -> Tuple[ImageFile, ...]:
+        """The newest MAX_IMAGES_PER_REPLY images among the messages the history still holds."""
+        start = history_window(chat.turns)
+        skipped = sum(len(turn.images) for turn in chat.turns[:start])  # images of omitted messages
+        numbered = image_numbers(chat.turns)[skipped:]
+        if numbered and chat.files_dir is None:
+            raise BackendError("this chat has images but no folder to read them from")
+        return tuple(ImageFile(number=n, path=os.path.join(chat.files_dir, name), media_type=media_type_of(name))
+                     for n, name in numbered[-MAX_IMAGES_PER_REPLY:])
 
     @staticmethod
     def _fail(chat: Chat, kind: str, message: str) -> None:
